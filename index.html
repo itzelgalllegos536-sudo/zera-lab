@@ -2302,43 +2302,66 @@ function ProduccionIntegradaModule({ onNavigate }) {
       setFormData(prev => ({ ...prev, foto_base64: base64, foto_orden: file.name }));
 
       try {
-        const { data: { text } } = await Tesseract.recognize(base64, 'spa');
-        const textoExtraido = text.toUpperCase();
+        // Usar Claude API con Vision para procesar la orden
+        const response = await fetch(ANTHROPIC_API_URL, {
+          method: 'POST',
+          headers: {
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: 'claude-3-5-sonnet-20241022',
+            max_tokens: 500,
+            messages: [{
+              role: 'user',
+              content: [
+                {
+                  type: 'image',
+                  source: { type: 'base64', media_type: 'image/jpeg', data: base64.split(',')[1] }
+                },
+                {
+                  type: 'text',
+                  text: `Lee esta orden de trabajo dental y extrae EXACTAMENTE estos campos en formato JSON:
+{
+  "folio": "ZL-XXXX o similar",
+  "doctor": "Nombre del doctor (Dr./Dra.)",
+  "paciente": "Nombre del paciente",
+  "trabajo": "Tipo de prótesis/trabajo (Corona, Puente, etc)",
+  "dientes": "Números de dientes afectados (ej: 11,12,13)"
+}
 
-        // Buscar patrones en el texto para rellenar automáticamente
-        let folio = formData.folio;
-        let doctor = formData.doctor;
-        let paciente = formData.paciente;
-        let trabajo = formData.trabajo;
+Responde SOLO con el JSON, sin texto adicional.`
+                }
+              ]
+            }]
+          })
+        });
 
-        // Buscar folio (ZL-XXXX pattern)
-        const folioMatch = textoExtraido.match(/ZL-?\d{4,}/);
-        if (folioMatch) folio = folioMatch[0];
+        if (!response.ok) {
+          throw new Error('Error en Claude API');
+        }
 
-        // Buscar doctor (Dr. o Dra.)
-        const doctorMatch = textoExtraido.match(/(?:DR\.?|DRA\.?)\s+([A-ZÁÉÍÓÚ][A-Z\s]{3,20}?)(?=\n|$|PACIENTE|DIENTE)/);
-        if (doctorMatch) doctor = doctorMatch[1].trim();
+        const data = await response.json();
+        const contenido = data.content[0]?.text || '{}';
 
-        // Buscar paciente
-        const pacienteMatch = textoExtraido.match(/PACIENTE[:\s]+([A-ZÁÉÍÓÚ][A-Z\s]{3,30}?)(?=\n|DIENTE|TRABAJO|$)/);
-        if (pacienteMatch) paciente = pacienteMatch[1].trim();
-
-        // Buscar tipo de trabajo
-        const trabajoMatch = textoExtraido.match(/(?:TRABAJO|TIPO)[:\s]+([A-ZÁÉÍÓÚ][A-Z\s]{3,30}?)(?=\n|DIENTE|$)/);
-        if (trabajoMatch) trabajo = trabajoMatch[1].trim();
+        // Extraer JSON de la respuesta
+        const jsonMatch = contenido.match(/\{[\s\S]*\}/);
+        const datosExtraidos = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
 
         setFormData(prev => ({
           ...prev,
-          folio: folio || prev.folio,
-          doctor: doctor || prev.doctor,
-          paciente: paciente || prev.paciente,
-          trabajo: trabajo || prev.trabajo
+          folio: datosExtraidos.folio || prev.folio,
+          doctor: datosExtraidos.doctor || prev.doctor,
+          paciente: datosExtraidos.paciente || prev.paciente,
+          trabajo: datosExtraidos.trabajo || prev.trabajo,
+          dientes: datosExtraidos.dientes || prev.dientes
         }));
 
-        alert('✅ Foto procesada. Campos rellenados automáticamente.');
+        alert('✅ Foto procesada con IA. Campos rellenados automáticamente.');
       } catch (err) {
-        console.error('Error en OCR:', err);
-        alert('⚠️ No se pudo procesar la foto. Intenta con una imagen más clara.');
+        console.error('Error procesando foto:', err);
+        alert('⚠️ No se pudo procesar la foto. Intenta con una imagen más clara o llena los campos manualmente.');
       } finally {
         setProcesandoOCR(false);
       }
@@ -2477,8 +2500,20 @@ function ProduccionIntegradaModule({ onNavigate }) {
               disabled={procesandoOCR}
               style={{ padding: '8px', width: '100%', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', cursor: procesandoOCR ? 'not-allowed' : 'pointer' }}
             />
-            {procesandoOCR && <div style={{ color: 'var(--info)', fontSize: '12px', marginTop: '8px' }}>⏳ Procesando OCR...</div>}
+            {procesandoOCR && <div style={{ color: 'var(--info)', fontSize: '12px', marginTop: '8px' }}>🔄 Procesando con IA...</div>}
             {formData.foto_orden && <div style={{ color: 'var(--success)', fontSize: '12px', marginTop: '8px' }}>✅ {formData.foto_orden}</div>}
+
+            {/* VISTA PREVIA DE LA IMAGEN */}
+            {formData.foto_base64 && (
+              <div style={{ marginTop: '12px', padding: '12px', background: 'var(--bg-card)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+                <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>📋 Vista previa de la orden:</div>
+                <img
+                  src={formData.foto_base64}
+                  alt="Foto de orden"
+                  style={{ width: '100%', height: 'auto', maxHeight: '300px', borderRadius: 'var(--radius-md)', objectFit: 'contain', border: '1px solid var(--border-subtle)' }}
+                />
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginBottom: '12px' }}>
