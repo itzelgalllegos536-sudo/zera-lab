@@ -1576,7 +1576,7 @@ function OrdenesModule({ onNavigate }) {
               'anthropic-version': '2023-06-01'
             },
             body: JSON.stringify({
-              model: 'claude-3-5-sonnet-20241022',
+              model: 'claude-sonnet-4-6',
               max_tokens: 1024,
               messages: [{
                 role: 'user',
@@ -2321,11 +2321,11 @@ function ProduccionIntegradaModule({ onNavigate }) {
           method: 'POST',
           headers: {
             'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
+            'anthropic-version': '2024-06-01',
             'content-type': 'application/json'
           },
           body: JSON.stringify({
-            model: 'claude-3-5-sonnet-20241022',
+            model: 'claude-sonnet-4-6',
             max_tokens: 1000,
             messages: [{
               role: 'user',
@@ -2549,7 +2549,7 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
       </div>
 
       {showFormularioRecepcion && (
-        <div style={{ background: 'var(--bg-card)', padding: '20px', borderRadius: 'var(--radius-lg)', border: '2px solid var(--mod-produccion)', marginBottom: '16px' }}>
+        <div style={{ background: 'var(--bg-card)', padding: '20px', borderRadius: 'var(--radius-lg)', border: '2px solid var(--mod-produccion)', marginBottom: '16px', maxHeight: '80vh', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
             <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>📥 Registrar Nueva Orden</h3>
             {/* MODO MANUAL TOGGLE */}
@@ -2588,18 +2588,19 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
               disabled={procesandoOCR}
               style={{ padding: '8px', width: '100%', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', cursor: procesandoOCR ? 'not-allowed' : 'pointer' }}
             />
-            {procesandoOCR && <div style={{ color: 'var(--info)', fontSize: '12px', marginTop: '8px' }}>🔄 Procesando con IA...</div>}
-            {formData.foto_orden && <div style={{ color: 'var(--success)', fontSize: '12px', marginTop: '8px' }}>✅ {formData.foto_orden}</div>}
+            {procesandoOCR && <div style={{ color: 'var(--info)', fontSize: '12px', marginTop: '8px', fontWeight: 600 }}>🔄 Procesando con IA...</div>}
+            {formData.foto_orden && <div style={{ color: 'var(--success)', fontSize: '12px', marginTop: '8px', fontWeight: 600 }}>✅ {formData.foto_orden}</div>}
 
-            {/* VISTA PREVIA DE LA IMAGEN */}
+            {/* VISTA PREVIA GRANDE DE LA IMAGEN */}
             {formData.foto_base64 && (
-              <div style={{ marginTop: '12px', padding: '12px', background: 'var(--bg-card)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
-                <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>📋 Vista previa de la orden:</div>
+              <div style={{ marginTop: '16px', padding: '16px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', border: '2px solid var(--mod-produccion)', textAlign: 'center' }}>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--mod-produccion)', marginBottom: '12px' }}>📋 VISTA PREVIA DE LA ORDEN</div>
                 <img
                   src={formData.foto_base64}
                   alt="Foto de orden"
-                  style={{ width: '100%', height: 'auto', maxHeight: '300px', borderRadius: 'var(--radius-md)', objectFit: 'contain', border: '1px solid var(--border-subtle)' }}
+                  style={{ width: '100%', height: 'auto', maxHeight: '400px', borderRadius: 'var(--radius-md)', objectFit: 'contain', border: '2px solid var(--border-subtle)', backgroundColor: '#000' }}
                 />
+                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '12px' }}>⬆️ Campos detectados se llenarán automáticamente abajo</div>
               </div>
             )}
           </div>
@@ -2607,24 +2608,39 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
 
           {/* SECCIÓN MODO MANUAL - Solo cuando showManualMode es true */}
           {showManualMode && (
-          <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', border: '2px dashed var(--mod-produccion)' }}>
-            <label style={{ display: 'block', marginBottom: '12px', fontSize: '13px', fontWeight: 600, color: 'var(--mod-produccion)' }}>✍️ Ingresa los datos manualmente</label>
+          <div style={{ marginBottom: '16px', padding: '16px', background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', border: '2px dashed var(--mod-produccion)' }}>
+            <label style={{ display: 'block', marginBottom: '16px', fontSize: '14px', fontWeight: 700, color: 'var(--mod-produccion)' }}>✍️ Ingresa los datos manualmente</label>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px' }}>
-              <input type="text" placeholder="Folio" value={formData.folio} onChange={(e) => setFormData({...formData, folio: e.target.value})} style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
-              <input type="text" placeholder="Doctor" value={formData.doctor} onChange={(e) => setFormData({...formData, doctor: e.target.value})} style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
-              <input type="text" placeholder="Paciente" value={formData.paciente} onChange={(e) => setFormData({...formData, paciente: e.target.value})} style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
-              <select value={formData.trabajo} onChange={(e) => setFormData({...formData, trabajo: e.target.value})} style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }}>
+              <input type="text" placeholder="Folio" value={formData.folio} onChange={(e) => setFormData({...formData, folio: e.target.value})} style={{ padding: '12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', fontSize: '13px' }} />
+              <input type="text" placeholder="Doctor" value={formData.doctor} onChange={(e) => setFormData({...formData, doctor: e.target.value})} style={{ padding: '12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', fontSize: '13px' }} />
+              <input type="text" placeholder="Paciente" value={formData.paciente} onChange={(e) => setFormData({...formData, paciente: e.target.value})} style={{ padding: '12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', fontSize: '13px' }} />
+              <select value={formData.trabajo} onChange={(e) => setFormData({...formData, trabajo: e.target.value})} style={{ padding: '12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', fontSize: '13px' }}>
                 <option value="">Tipo de prótesis</option>
                 {PROTESIS_TIPOS.map(tipo => <option key={tipo.id} value={tipo.label}>{tipo.label}</option>)}
               </select>
-              <input type="text" placeholder="Dientes (ej: 11, 12, 21)" value={formData.dientes} onChange={(e) => setFormData({...formData, dientes: e.target.value})} style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
-              <input type="number" placeholder="Unidades" value={formData.unidades} onChange={(e) => setFormData({...formData, unidades: parseInt(e.target.value)})} min="1" style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+              <input type="text" placeholder="Dientes (ej: 11, 12, 21)" value={formData.dientes} onChange={(e) => setFormData({...formData, dientes: e.target.value})} style={{ padding: '12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', fontSize: '13px' }} />
+              <input type="number" placeholder="Unidades" value={formData.unidades} onChange={(e) => setFormData({...formData, unidades: parseInt(e.target.value)})} min="1" style={{ padding: '12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', fontSize: '13px' }} />
             </div>
           </div>
           )}
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button onClick={handleAgregarOrden} style={{ padding: '10px 16px', background: 'var(--success)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600, flex: 1 }}>✅ Guardar</button>
-            <button onClick={() => setShowFormularioRecepcion(false)} style={{ padding: '10px 16px', background: 'var(--bg-card-hover)', color: '#fff', border: '1px solid var(--border-medium)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600 }}>✕</button>
+
+          {/* CAMPOS RELLENADOS POR IA (si existen) */}
+          {!showManualMode && (formData.doctor || formData.paciente || formData.trabajo) && (
+            <div style={{ marginBottom: '16px', padding: '16px', background: 'var(--success)20', borderRadius: 'var(--radius-md)', border: '2px solid var(--success)', borderLeft: '4px solid var(--success)' }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--success)', marginBottom: '12px' }}>✅ DATOS DETECTADOS POR IA</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', fontSize: '12px' }}>
+                {formData.folio && <div><span style={{ color: 'var(--text-secondary)' }}>Folio:</span> <strong style={{ color: 'var(--text-primary)' }}>{formData.folio}</strong></div>}
+                {formData.doctor && <div><span style={{ color: 'var(--text-secondary)' }}>Doctor:</span> <strong style={{ color: 'var(--text-primary)' }}>{formData.doctor}</strong></div>}
+                {formData.paciente && <div><span style={{ color: 'var(--text-secondary)' }}>Paciente:</span> <strong style={{ color: 'var(--text-primary)' }}>{formData.paciente}</strong></div>}
+                {formData.trabajo && <div><span style={{ color: 'var(--text-secondary)' }}>Trabajo:</span> <strong style={{ color: 'var(--text-primary)' }}>{formData.trabajo}</strong></div>}
+                {formData.dientes && <div><span style={{ color: 'var(--text-secondary)' }}>Dientes:</span> <strong style={{ color: 'var(--text-primary)' }}>{formData.dientes}</strong></div>}
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: '8px', marginTop: 'auto' }}>
+            <button onClick={handleAgregarOrden} style={{ padding: '12px 16px', background: 'var(--success)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600, flex: 1, fontSize: '14px' }}>✅ Guardar Orden</button>
+            <button onClick={() => setShowFormularioRecepcion(false)} style={{ padding: '12px 16px', background: 'var(--bg-card-hover)', color: '#fff', border: '1px solid var(--border-medium)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600, fontSize: '14px' }}>✕ Cancelar</button>
           </div>
         </div>
       )}
