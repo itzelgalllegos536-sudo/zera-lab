@@ -1224,7 +1224,63 @@ function ProduccionIntegradaModule() {
   const [selectedOrder, setSelectedOrder] = React.useState(null);
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [showFormularioRecepcion, setShowFormularioRecepcion] = React.useState(false);
-  const [formData, setFormData] = React.useState({ folio: '', doctor: '', paciente: '', trabajo: '', dientes: '', unidades: 1 });
+  const [formData, setFormData] = React.useState({ folio: '', doctor: '', paciente: '', trabajo: '', dientes: '', unidades: 1, foto_orden: null, foto_base64: null });
+  const [procesandoOCR, setProcesandoOCR] = React.useState(false);
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setProcesandoOCR(true);
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const base64 = event.target.result;
+      setFormData(prev => ({ ...prev, foto_base64: base64, foto_orden: file.name }));
+
+      try {
+        const { data: { text } } = await Tesseract.recognize(base64, 'spa');
+        const textoExtraido = text.toUpperCase();
+
+        // Buscar patrones en el texto para rellenar automáticamente
+        let folio = formData.folio;
+        let doctor = formData.doctor;
+        let paciente = formData.paciente;
+        let trabajo = formData.trabajo;
+
+        // Buscar folio (ZL-XXXX pattern)
+        const folioMatch = textoExtraido.match(/ZL-?\d{4,}/);
+        if (folioMatch) folio = folioMatch[0];
+
+        // Buscar doctor (Dr. o Dra.)
+        const doctorMatch = textoExtraido.match(/(?:DR\.?|DRA\.?)\s+([A-ZÁÉÍÓÚ][A-Z\s]{3,20}?)(?=\n|$|PACIENTE|DIENTE)/);
+        if (doctorMatch) doctor = doctorMatch[1].trim();
+
+        // Buscar paciente
+        const pacienteMatch = textoExtraido.match(/PACIENTE[:\s]+([A-ZÁÉÍÓÚ][A-Z\s]{3,30}?)(?=\n|DIENTE|TRABAJO|$)/);
+        if (pacienteMatch) paciente = pacienteMatch[1].trim();
+
+        // Buscar tipo de trabajo
+        const trabajoMatch = textoExtraido.match(/(?:TRABAJO|TIPO)[:\s]+([A-ZÁÉÍÓÚ][A-Z\s]{3,30}?)(?=\n|DIENTE|$)/);
+        if (trabajoMatch) trabajo = trabajoMatch[1].trim();
+
+        setFormData(prev => ({
+          ...prev,
+          folio: folio || prev.folio,
+          doctor: doctor || prev.doctor,
+          paciente: paciente || prev.paciente,
+          trabajo: trabajo || prev.trabajo
+        }));
+
+        alert('✅ Foto procesada. Campos rellenados automáticamente.');
+      } catch (err) {
+        console.error('Error en OCR:', err);
+        alert('⚠️ No se pudo procesar la foto. Intenta con una imagen más clara.');
+      } finally {
+        setProcesandoOCR(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   const handleDragStart = (e, order) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('orderId', order.id); };
   const handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
@@ -1253,11 +1309,12 @@ function ProduccionIntegradaModule() {
     const ahora = new Date();
     const fecha = ahora.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const usuarioActual = localStorage.getItem('usuarioActual') || 'Sistema';
-    const nuevoOrden = { id: Math.max(...ordenes.map(o => o.id), 0) + 1, folio: formData.folio, doctor: formData.doctor, paciente: formData.paciente, trabajo: formData.trabajo, dientes: formData.dientes, unidades: formData.unidades, estado: 'recepcion', asignado_a: usuarioActual, historial: [{ fase: 'recepcion', fecha: fecha, usuario: usuarioActual, notas: 'Ingresado manualmente' }], fotos_evidencia: [], notas_trabajos: '' };
+    const fotosEvidencia = formData.foto_base64 ? [{ nombre: formData.foto_orden, data: formData.foto_base64, fecha: fecha }] : [];
+    const nuevoOrden = { id: Math.max(...ordenes.map(o => o.id), 0) + 1, folio: formData.folio, doctor: formData.doctor, paciente: formData.paciente, trabajo: formData.trabajo, dientes: formData.dientes, unidades: formData.unidades, estado: 'recepcion', asignado_a: usuarioActual, historial: [{ fase: 'recepcion', fecha: fecha, usuario: usuarioActual, notas: formData.foto_orden ? `Orden ingresada con foto: ${formData.foto_orden}` : 'Ingresado manualmente' }], fotos_evidencia: fotosEvidencia, notas_trabajos: '' };
     const nuevasOrdenes = [...ordenes, nuevoOrden];
     setOrdenes(nuevasOrdenes);
     localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
-    setFormData({ folio: '', doctor: '', paciente: '', trabajo: '', dientes: '', unidades: 1 });
+    setFormData({ folio: '', doctor: '', paciente: '', trabajo: '', dientes: '', unidades: 1, foto_orden: null, foto_base64: null });
     setShowFormularioRecepcion(false);
   };
 
@@ -1274,6 +1331,21 @@ function ProduccionIntegradaModule() {
       {showFormularioRecepcion && (
         <div style={{ background: 'var(--bg-card)', padding: '20px', borderRadius: 'var(--radius-lg)', border: '2px solid var(--mod-produccion)', marginBottom: '16px' }}>
           <h3 style={{ marginBottom: '12px', color: 'var(--text-primary)' }}>📥 Registrar Nueva Orden</h3>
+
+          {/* Sección de Foto */}
+          <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', border: '2px dashed var(--mod-produccion)' }}>
+            <label style={{ display: 'block', marginBottom: '8px', fontSize: '13px', fontWeight: 600, color: 'var(--mod-produccion)' }}>📸 Foto de Orden (IA procesará automáticamente)</label>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={handleFileUpload}
+              disabled={procesandoOCR}
+              style={{ padding: '8px', width: '100%', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', cursor: procesandoOCR ? 'not-allowed' : 'pointer' }}
+            />
+            {procesandoOCR && <div style={{ color: 'var(--info)', fontSize: '12px', marginTop: '8px' }}>⏳ Procesando OCR...</div>}
+            {formData.foto_orden && <div style={{ color: 'var(--success)', fontSize: '12px', marginTop: '8px' }}>✅ {formData.foto_orden}</div>}
+          </div>
+
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginBottom: '12px' }}>
             <input type="text" placeholder="Folio" value={formData.folio} onChange={(e) => setFormData({...formData, folio: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
             <input type="text" placeholder="Doctor" value={formData.doctor} onChange={(e) => setFormData({...formData, doctor: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
@@ -1329,6 +1401,24 @@ function ProduccionIntegradaModule() {
                   <div style={{ background: 'var(--accent-blue-soft)', padding: '10px', borderRadius: 'var(--radius-md)', borderLeft: '3px solid var(--accent-blue)' }}><span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>👨‍🔧 TRABAJA:</span><div style={{ color: 'var(--accent-blue)', fontWeight: 700, marginTop: '4px', fontSize: '14px' }}>{selectedOrder.asignado_a || '⚠️ Sin asignar'}</div></div>
                 </div>
               </div>
+              {selectedOrder.fotos_evidencia && selectedOrder.fotos_evidencia.length > 0 && (
+                <div style={{ marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '12px' }}>📸 EVIDENCIA FOTOGRÁFICA</h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {selectedOrder.fotos_evidencia.map((foto, idx) => (
+                      <div key={idx} style={{ background: 'var(--bg-card)', borderRadius: 'var(--radius-md)', overflow: 'hidden', border: '2px solid var(--border-subtle)' }}>
+                        <div style={{ width: '100%', maxHeight: '200px', overflow: 'hidden', background: '#000' }}>
+                          <img src={foto.data} alt={foto.nombre} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '0' }} />
+                        </div>
+                        <div style={{ padding: '10px', background: 'var(--bg-input)' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>{foto.nombre}</div>
+                          <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>⏰ {foto.fecha}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div style={{ marginBottom: '24px' }}>
                 <h3 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '12px' }}>📅 HISTORIAL</h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
