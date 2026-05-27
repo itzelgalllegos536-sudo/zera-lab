@@ -1,0 +1,1305 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>ZERA LAB — Sistema de Gestión</title>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/react.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/react-dom.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script async src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js"></script>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #0f1419;
+            color: #ffffff;
+            overflow: hidden;
+            -webkit-user-select: none;
+        }
+
+        #root {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .app-container {
+            display: flex;
+            height: 100%;
+            width: 100%;
+            flex-direction: row;
+        }
+
+        .sidebar {
+            background: #1a1f2e;
+            border-right: 1px solid #2d3748;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            flex-shrink: 0;
+        }
+
+        .sidebar-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid #2d3748;
+            font-size: 1.5rem;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+
+        .sidebar-menu {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .menu-item {
+            padding: 1rem 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            cursor: pointer;
+            border-left: 3px solid transparent;
+            transition: all 0.3s ease;
+            white-space: nowrap;
+            font-size: 0.95rem;
+        }
+
+        .menu-item:hover {
+            background: #252d3d;
+            color: #60a5fa;
+        }
+
+        .menu-item.active {
+            background: #1f2937;
+            border-left-color: #3b82f6;
+            color: #60a5fa;
+        }
+
+        .menu-icon {
+            font-size: 1.25rem;
+            flex-shrink: 0;
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .module-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid #2d3748;
+            background: #1a1f2e;
+        }
+
+        .module-header h1 {
+            font-size: clamp(1.5rem, 5vw, 2rem);
+            font-weight: bold;
+        }
+
+        .module-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        /* Responsividad para tablet (768px) */
+        @media (max-width: 1024px) {
+            .sidebar {
+                width: 200px;
+            }
+
+            .sidebar-header {
+                font-size: 1.25rem;
+                padding: 1rem;
+            }
+
+            .menu-item {
+                padding: 0.75rem 1rem;
+                font-size: 0.85rem;
+            }
+
+            .module-content {
+                padding: 1rem;
+            }
+        }
+
+        /* Responsividad para móvil (480px) */
+        @media (max-width: 768px) {
+            .app-container {
+                flex-direction: column;
+            }
+
+            .sidebar {
+                width: 100%;
+                max-height: 60px;
+                flex-direction: row;
+                border-right: none;
+                border-bottom: 1px solid #2d3748;
+            }
+
+            .sidebar-header {
+                padding: 0.75rem 1rem;
+                border-bottom: none;
+                border-right: 1px solid #2d3748;
+                font-size: 1.1rem;
+                min-width: 120px;
+            }
+
+            .sidebar-menu {
+                flex-direction: row;
+                overflow-x: auto;
+                overflow-y: hidden;
+                flex: 1;
+            }
+
+            .menu-item {
+                padding: 0.75rem 1rem;
+                border-left: none;
+                border-bottom: 3px solid transparent;
+                font-size: 0.75rem;
+            }
+
+            .menu-item.active {
+                border-left: none;
+                border-bottom-color: #3b82f6;
+            }
+
+            .menu-item:hover {
+                border-bottom-color: #60a5fa;
+            }
+
+            .menu-icon {
+                font-size: 1rem;
+            }
+
+            .main-content {
+                flex: 1;
+            }
+
+            .module-header {
+                padding: 1rem;
+            }
+
+            .module-header h1 {
+                font-size: 1.25rem;
+            }
+
+            .module-content {
+                padding: 0.75rem;
+                gap: 1rem;
+            }
+        }
+
+        /* Tarjetas y componentes */
+        .card {
+            background: #1f2937;
+            border: 1px solid #2d3748;
+            border-radius: 0.5rem;
+            padding: 1.25rem;
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            color: #e5e7eb;
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        label {
+            font-size: 0.9rem;
+            color: #d1d5db;
+            font-weight: 500;
+        }
+
+        input, select, textarea {
+            background: #111827;
+            border: 1px solid #2d3748;
+            color: #ffffff;
+            padding: 0.75rem;
+            border-radius: 0.375rem;
+            font-size: 1rem;
+            font-family: inherit;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        input:disabled {
+            background: #0f1419;
+            color: #9ca3af;
+            cursor: not-allowed;
+            border-color: #1f2937;
+        }
+
+        button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.375rem;
+            cursor: pointer;
+            font-size: 0.95rem;
+            font-weight: 500;
+            transition: background 0.2s;
+            white-space: nowrap;
+            min-height: 44px;
+            min-width: 44px;
+            touch-action: manipulation;
+        }
+
+        button:hover {
+            background: #2563eb;
+        }
+
+        button:active {
+            background: #1d4ed8;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        /* Drag & drop area */
+        .drop-zone {
+            border: 2px dashed #2d3748;
+            border-radius: 0.5rem;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .drop-zone:hover, .drop-zone.active {
+            border-color: #3b82f6;
+            background: rgba(59, 130, 246, 0.05);
+        }
+
+        .drop-zone-text {
+            color: #9ca3af;
+            font-size: 0.9rem;
+        }
+
+        .image-preview {
+            max-width: 100%;
+            max-height: 300px;
+            border-radius: 0.375rem;
+            margin: 1rem 0;
+        }
+
+        .ocr-result {
+            background: #111827;
+            border-left: 3px solid #3b82f6;
+            padding: 1rem;
+            border-radius: 0.375rem;
+            margin: 1rem 0;
+            font-size: 0.9rem;
+            font-family: 'Monaco', 'Courier New', monospace;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: #60a5fa;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid rgba(96, 165, 250, 0.2);
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            border-bottom: 1px solid #2d3748;
+            overflow-x: auto;
+            margin-bottom: 1rem;
+        }
+
+        .tab {
+            padding: 0.75rem 1.25rem;
+            border: none;
+            background: transparent;
+            color: #9ca3af;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s;
+            white-space: nowrap;
+            font-size: 0.9rem;
+            touch-action: manipulation;
+        }
+
+        .tab:hover {
+            color: #e5e7eb;
+        }
+
+        .tab.active {
+            color: #3b82f6;
+            border-bottom-color: #3b82f6;
+            background: transparent;
+        }
+
+        .item-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .item {
+            background: #111827;
+            border: 1px solid #2d3748;
+            padding: 1rem;
+            border-radius: 0.375rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .item:hover {
+            border-color: #3b82f6;
+            background: #1a202c;
+        }
+
+        .item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .item-title {
+            font-weight: 600;
+            color: #e5e7eb;
+        }
+
+        .item-meta {
+            font-size: 0.8rem;
+            color: #9ca3af;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            background: #2d3748;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            color: #d1d5db;
+        }
+
+        .badge.success {
+            background: rgba(34, 197, 94, 0.2);
+            color: #86efac;
+        }
+
+        .badge.warning {
+            background: rgba(251, 146, 60, 0.2);
+            color: #fdba74;
+        }
+
+        .badge.info {
+            background: rgba(59, 130, 246, 0.2);
+            color: #93c5fd;
+        }
+
+        /* Grid para Control de Trabajo */
+        .control-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1rem;
+        }
+
+        .control-card {
+            background: #111827;
+            border: 1px solid #2d3748;
+            border-radius: 0.5rem;
+            padding: 1.25rem;
+            transition: all 0.3s;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .control-card:hover {
+            border-color: #3b82f6;
+            background: #1a202c;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.1);
+        }
+
+        .control-card-header {
+            margin-bottom: 1rem;
+            flex-shrink: 0;
+        }
+
+        .control-card-title {
+            font-weight: 600;
+            font-size: 1rem;
+            color: #e5e7eb;
+            margin-bottom: 0.25rem;
+        }
+
+        .control-card-subtitle {
+            font-size: 0.8rem;
+            color: #9ca3af;
+        }
+
+        .control-card-body {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            flex: 1;
+        }
+
+        .control-field {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+
+        .control-field label {
+            font-size: 0.8rem;
+            color: #d1d5db;
+        }
+
+        .control-field select {
+            font-size: 0.9rem;
+            padding: 0.6rem;
+        }
+
+        .control-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: auto;
+            padding-top: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .control-actions button {
+            flex: 1;
+            min-width: 120px;
+            padding: 0.75rem 1rem;
+            font-size: 0.95rem;
+            min-height: 48px;
+        }
+
+        .btn-next {
+            background: #10b981;
+        }
+
+        .btn-next:hover {
+            background: #059669;
+        }
+
+        @media (max-width: 480px) {
+            .card {
+                padding: 1rem;
+            }
+
+            .drop-zone {
+                padding: 1.5rem;
+            }
+
+            .button-group {
+                gap: 0.5rem;
+            }
+
+            button {
+                padding: 0.75rem 1rem;
+                font-size: 0.95rem;
+                min-height: 48px;
+            }
+
+            .item {
+                padding: 0.75rem;
+            }
+
+            .control-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .control-card {
+                padding: 1rem;
+            }
+
+            .control-actions {
+                flex-direction: column;
+            }
+
+            .control-actions button {
+                width: 100%;
+                min-width: auto;
+                padding: 1rem;
+                font-size: 1rem;
+                min-height: 52px;
+            }
+        }
+
+        .timestamp-info {
+            background: #0f1419;
+            border-left: 3px solid #60a5fa;
+            padding: 0.75rem;
+            border-radius: 0.375rem;
+            font-size: 0.85rem;
+            color: #93c5fd;
+            margin: 0.75rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // Esperar a que React esté disponible
+        const React = window.React;
+        const ReactDOM = window.ReactDOM;
+
+        if (!React) {
+            console.error('React no está cargado correctamente');
+            document.getElementById('root').innerHTML = '<p style="color:red;padding:20px;">Error: React no se cargó</p>';
+        }
+
+        const { useState, useEffect, useRef } = React;
+
+        // Formatear fecha y hora
+        const formatDateTime = (date) => {
+            return new Date(date).toLocaleString('es-MX', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            });
+        };
+
+        // OCR mejorado con Tesseract
+        const procesarOCR = async (imageData) => {
+            try {
+                const { createWorker } = Tesseract;
+                const worker = await createWorker('spa', 1, {
+                    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@v5/tesseract-core.wasm.js'
+                });
+
+                const result = await worker.recognize(imageData, {
+                    rotateAuto: true
+                });
+
+                await worker.terminate();
+                return result.data.text;
+            } catch (error) {
+                console.error('Error en OCR:', error);
+                return null;
+            }
+        };
+
+        // Módulo de Órdenes
+        function OrdenesModule({ onOrdenCreada }) {
+            const [ordenes, setOrdenes] = useState([]);
+            const [activeTab, setActiveTab] = useState('lista');
+            const [nuevaOrden, setNuevaOrden] = useState({
+                folio: '',
+                paciente: '',
+                diente: '',
+                tipo: '',
+                fechaSolicitud: new Date().toISOString().slice(0, 16),
+                notas: ''
+            });
+            const [ocrText, setOcrText] = useState('');
+            const [isProcessing, setIsProcessing] = useState(false);
+            const fileInputRef = useRef(null);
+
+            useEffect(() => {
+                const stored = localStorage.getItem('ordenes');
+                if (stored) setOrdenes(JSON.parse(stored));
+            }, []);
+
+            const guardarOrdenes = (newOrdenes) => {
+                setOrdenes(newOrdenes);
+                localStorage.setItem('ordenes', JSON.stringify(newOrdenes));
+            };
+
+            const handleAgregarOrden = () => {
+                if (nuevaOrden.paciente && nuevaOrden.fechaSolicitud && nuevaOrden.folio) {
+                    const ahora = new Date();
+                    const orden = {
+                        id: Date.now(),
+                        folio: nuevaOrden.folio,
+                        paciente: nuevaOrden.paciente,
+                        diente: nuevaOrden.diente,
+                        tipo: nuevaOrden.tipo,
+                        notas: nuevaOrden.notas,
+                        fechaSolicitud: nuevaOrden.fechaSolicitud,
+                        fechaCreacion: ahora.toISOString(),
+                        estado: 'pendiente'
+                    };
+
+                    guardarOrdenes([...ordenes, orden]);
+
+                    if (onOrdenCreada) {
+                        onOrdenCreada(orden);
+                    }
+
+                    setNuevaOrden({
+                        folio: '',
+                        paciente: '',
+                        diente: '',
+                        tipo: '',
+                        fechaSolicitud: new Date().toISOString().slice(0, 16),
+                        notas: ''
+                    });
+                    setActiveTab('lista');
+                    setOcrText('');
+                }
+            };
+
+            const handleEliminar = (id) => {
+                guardarOrdenes(ordenes.filter(o => o.id !== id));
+            };
+
+            const handleImageUpload = async (e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                    setIsProcessing(true);
+                    setOcrText('⏳ Leyendo imagen con OCR mejorado...');
+
+                    try {
+                        const reader = new FileReader();
+                        reader.onload = async (event) => {
+                            const imgData = event.target?.result;
+
+                            const extractedText = await procesarOCR(imgData);
+
+                            if (extractedText) {
+                                setOcrText(extractedText || 'No se detectó texto en la imagen');
+
+                                try {
+                                    const lines = extractedText.split('\n').filter(l => l.trim());
+                                    const updatedOrden = { ...nuevaOrden };
+                                    const text = extractedText.toLowerCase();
+
+                                    lines.forEach(line => {
+                                        const lower = line.toLowerCase();
+                                        const value = line.split(':').pop()?.trim() || line.trim();
+
+                                        if (lower.includes('folio') || lower.includes('nro') || lower.includes('number')) {
+                                            updatedOrden.folio = value || updatedOrden.folio;
+                                        } else if (lower.includes('paciente') || lower.includes('nombre') || lower.includes('patient')) {
+                                            updatedOrden.paciente = value || updatedOrden.paciente;
+                                        } else if (lower.includes('diente') || lower.includes('tooth') || lower.includes('dental')) {
+                                            updatedOrden.diente = value || updatedOrden.diente;
+                                        } else if (lower.includes('tipo') || lower.includes('type') || lower.includes('servicio')) {
+                                            updatedOrden.tipo = value || updatedOrden.tipo;
+                                        }
+                                    });
+
+                                    // Si no encontró folio, generar uno automático
+                                    if (!updatedOrden.folio) {
+                                        updatedOrden.folio = 'OR-' + new Date().getTime().toString().slice(-6);
+                                    }
+
+                                    setNuevaOrden(updatedOrden);
+                                } catch (error) {
+                                    console.log('No se pudo auto-llenar campos');
+                                }
+                            } else {
+                                setOcrText('❌ No se pudo procesar la imagen. Intenta con una imagen más clara.');
+                            }
+                        };
+                        reader.readAsDataURL(file);
+                    } catch (error) {
+                        setOcrText('❌ Error al procesar la imagen: ' + error.message);
+                    } finally {
+                        setIsProcessing(false);
+                    }
+                }
+            };
+
+            const handleDragDrop = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const files = e.dataTransfer?.files;
+                if (files?.[0]) {
+                    fileInputRef.current = { files };
+                    handleImageUpload({ target: { files } });
+                }
+            };
+
+            return (
+                <div className="module-content">
+                    <div className="tabs">
+                        <button
+                            className={`tab ${activeTab === 'lista' ? 'active' : ''}`}
+                            onClick={() => setActiveTab('lista')}
+                        >
+                            📋 Lista de Órdenes
+                        </button>
+                        <button
+                            className={`tab ${activeTab === 'nueva' ? 'active' : ''}`}
+                            onClick={() => setActiveTab('nueva')}
+                        >
+                            ➕ Nueva Orden
+                        </button>
+                    </div>
+
+                    {activeTab === 'lista' && (
+                        <div className="item-list">
+                            {ordenes.length === 0 ? (
+                                <p style={{ color: '#9ca3af' }}>No hay órdenes registradas</p>
+                            ) : (
+                                ordenes.map(orden => (
+                                    <div key={orden.id} className="item">
+                                        <div className="item-header">
+                                            <div>
+                                                <div className="item-title">📋 {orden.folio} - {orden.paciente}</div>
+                                                <div className="item-meta">Diente: {orden.diente} | Tipo: {orden.tipo}</div>
+                                            </div>
+                                            <button
+                                                onClick={() => handleEliminar(orden.id)}
+                                                style={{ background: '#ef4444', padding: '0.5rem 1rem', fontSize: '0.8rem' }}
+                                            >
+                                                Eliminar
+                                            </button>
+                                        </div>
+                                        <div className="timestamp-info">
+                                            🕐 Solicitud: {formatDateTime(orden.fechaSolicitud)}<br/>
+                                            📤 Registrada: {formatDateTime(orden.fechaCreacion)}
+                                        </div>
+                                        {orden.notas && (
+                                            <div style={{ fontSize: '0.85rem', color: '#9ca3af', marginTop: '0.5rem' }}>
+                                                📝 {orden.notas}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    )}
+
+                    {activeTab === 'nueva' && (
+                        <div className="card">
+                            <div className="card-title">Registrar Nueva Orden</div>
+
+                            <div className="form-group">
+                                <label>📸 Tomar foto o arrastrar imagen</label>
+                                <div
+                                    className="drop-zone"
+                                    onDragOver={(e) => {
+                                        e.preventDefault();
+                                        e.currentTarget.classList.add('active');
+                                    }}
+                                    onDragLeave={(e) => e.currentTarget.classList.remove('active')}
+                                    onDrop={handleDragDrop}
+                                    onClick={() => fileInputRef.current?.click?.()}
+                                >
+                                    <div className="drop-zone-text">
+                                        {isProcessing ? '⏳ Procesando...' : '📷 Haz clic o arrastra una imagen aquí'}
+                                    </div>
+                                    <input
+                                        ref={fileInputRef}
+                                        type="file"
+                                        accept="image/*"
+                                        style={{ display: 'none' }}
+                                        onChange={handleImageUpload}
+                                    />
+                                </div>
+                            </div>
+
+                            {ocrText && (
+                                <div className="ocr-result">
+                                    <strong>📖 Texto detectado:</strong>
+                                    <div style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
+                                        {ocrText}
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="form-group">
+                                <label>Folio de Orden (Nro.) *</label>
+                                <input
+                                    type="text"
+                                    value={nuevaOrden.folio}
+                                    onChange={(e) => setNuevaOrden({...nuevaOrden, folio: e.target.value})}
+                                    placeholder="Ej: OR-2024-001 o autodetectado del documento"
+                                />
+                            </div>
+
+                            <div className="form-group">
+                                <label>Paciente *</label>
+                                <input
+                                    type="text"
+                                    value={nuevaOrden.paciente}
+                                    onChange={(e) => setNuevaOrden({...nuevaOrden, paciente: e.target.value})}
+                                    placeholder="Nombre del paciente"
+                                />
+                            </div>
+
+                            <div className="form-group">
+                                <label>Diente</label>
+                                <input
+                                    type="text"
+                                    value={nuevaOrden.diente}
+                                    onChange={(e) => setNuevaOrden({...nuevaOrden, diente: e.target.value})}
+                                    placeholder="Ej: 1.1"
+                                />
+                            </div>
+
+                            <div className="form-group">
+                                <label>Tipo de Trabajo</label>
+                                <select
+                                    value={nuevaOrden.tipo}
+                                    onChange={(e) => setNuevaOrden({...nuevaOrden, tipo: e.target.value})}
+                                >
+                                    <option value="">Selecciona un tipo</option>
+                                    <option value="Corona">Corona</option>
+                                    <option value="Puente">Puente</option>
+                                    <option value="Implante">Implante</option>
+                                    <option value="Prótesis">Prótesis</option>
+                                    <option value="Incrustación">Incrustación</option>
+                                </select>
+                            </div>
+
+                            <div className="form-group">
+                                <label>📅 Fecha y hora de la solicitud (cuándo el doctor la realizó) *</label>
+                                <input
+                                    type="datetime-local"
+                                    value={nuevaOrden.fechaSolicitud}
+                                    onChange={(e) => setNuevaOrden({...nuevaOrden, fechaSolicitud: e.target.value})}
+                                />
+                            </div>
+
+                            <div className="timestamp-info">
+                                ✅ La hora de registro (cuando se suba) se capturará automáticamente
+                            </div>
+
+                            <div className="form-group">
+                                <label>Notas</label>
+                                <textarea
+                                    value={nuevaOrden.notas}
+                                    onChange={(e) => setNuevaOrden({...nuevaOrden, notas: e.target.value})}
+                                    placeholder="Observaciones especiales..."
+                                    rows={3}
+                                />
+                            </div>
+
+                            <button onClick={handleAgregarOrden}>
+                                ✅ Registrar Orden
+                            </button>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Módulo de Producción
+        function ProduccionModule({ ordenesSync }) {
+            const [items, setItems] = useState([]);
+            const [filterFase, setFilterFase] = useState('registro');
+            const [ordenes, setOrdenes] = useState([]);
+
+            const FASES = ['registro', 'en-proceso', 'acabado', 'calidad', 'listo'];
+            const PERSONAS = ['Rafael', 'Juan', 'Aram', 'Montserrat', 'Fidel', 'Kevin'];
+
+            useEffect(() => {
+                const stored = localStorage.getItem('produccion');
+                if (stored) setItems(JSON.parse(stored));
+            }, []);
+
+            // Escuchar cambios en localStorage de órdenes
+            useEffect(() => {
+                const loadOrdenes = () => {
+                    const stored = localStorage.getItem('ordenes');
+                    if (stored) {
+                        const nuevasOrdenes = JSON.parse(stored);
+                        setOrdenes(nuevasOrdenes);
+
+                        // Sincronizar: agregar órdenes que no tengan items de producción
+                        setItems(prevItems => {
+                            const updatedItems = [...prevItems];
+                            let changed = false;
+
+                            nuevasOrdenes.forEach(orden => {
+                                const exists = updatedItems.find(item => item.ordenId === orden.id);
+                                if (!exists) {
+                                    const nuevoItem = {
+                                        id: orden.id,
+                                        ordenId: orden.id,
+                                        folio: orden.folio,
+                                        nombre: `${orden.folio} - ${orden.paciente} (${orden.tipo}, Diente ${orden.diente})`,
+                                        fase: 'registro',
+                                        persona: '— Sin asignar —',
+                                        fechaInicio: new Date().toISOString(),
+                                        ordenData: orden
+                                    };
+                                    updatedItems.push(nuevoItem);
+                                    changed = true;
+                                }
+                            });
+
+                            if (changed) {
+                                localStorage.setItem('produccion', JSON.stringify(updatedItems));
+                            }
+                            return updatedItems;
+                        });
+                    }
+                };
+
+                loadOrdenes();
+
+                // Escuchar cambios en localStorage cada segundo
+                const interval = setInterval(loadOrdenes, 1000);
+                return () => clearInterval(interval);
+            }, []);
+
+            const guardarProduccion = (newItems) => {
+                setItems(newItems);
+                localStorage.setItem('produccion', JSON.stringify(newItems));
+            };
+
+            const agregarItem = () => {
+                const newItem = {
+                    id: Date.now(),
+                    nombre: 'Nuevo Trabajo',
+                    fase: 'registro',
+                    persona: '— Sin asignar —',
+                    fechaInicio: new Date().toISOString()
+                };
+                guardarProduccion([...items, newItem]);
+            };
+
+            const moverFase = (id, index) => {
+                if (index < FASES.length - 1) {
+                    const newItems = items.map(item =>
+                        item.id === id ? { ...item, fase: FASES[index + 1] } : item
+                    );
+                    guardarProduccion(newItems);
+                }
+            };
+
+            const asignarPersona = (id, persona) => {
+                const newItems = items.map(item =>
+                    item.id === id ? { ...item, persona } : item
+                );
+                guardarProduccion(newItems);
+            };
+
+            const itemsEnFase = items.filter(item => item.fase === filterFase);
+
+            return (
+                <div className="module-content">
+                    <div className="tabs">
+                        {FASES.map(fase => (
+                            <button
+                                key={fase}
+                                className={`tab ${filterFase === fase ? 'active' : ''}`}
+                                onClick={() => setFilterFase(fase)}
+                            >
+                                {fase.charAt(0).toUpperCase() + fase.slice(1).replace('-', ' ')} ({items.filter(i => i.fase === fase).length})
+                            </button>
+                        ))}
+                    </div>
+
+                    <button onClick={agregarItem} style={{ alignSelf: 'flex-start' }}>
+                        ➕ Nuevo Trabajo Manual
+                    </button>
+
+                    <div className="item-list">
+                        {itemsEnFase.length === 0 ? (
+                            <p style={{ color: '#9ca3af' }}>No hay trabajos en esta fase</p>
+                        ) : (
+                            itemsEnFase.map(item => {
+                                const faseIndex = FASES.indexOf(item.fase);
+                                return (
+                                    <div key={item.id} className="item">
+                                        <div className="item-header">
+                                            <div className="item-title">{item.nombre}</div>
+                                            <span className="badge info">{item.persona}</span>
+                                        </div>
+
+                                        <div className="form-group" style={{ marginTop: '0.75rem' }}>
+                                            <label style={{ fontSize: '0.85rem' }}>Asignar a:</label>
+                                            <select
+                                                value={item.persona}
+                                                onChange={(e) => asignarPersona(item.id, e.target.value)}
+                                                style={{ fontSize: '0.9rem' }}
+                                            >
+                                                <option value="— Sin asignar —">— Sin asignar —</option>
+                                                {PERSONAS.map(p => (
+                                                    <option key={p} value={p}>{p}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        {faseIndex < FASES.length - 1 && (
+                                            <button
+                                                onClick={() => moverFase(item.id, faseIndex)}
+                                                style={{ marginTop: '0.75rem', fontSize: '0.9rem', padding: '0.6rem 1rem' }}
+                                            >
+                                                ➡️ Siguiente Fase
+                                            </button>
+                                        )}
+                                        {faseIndex === FASES.length - 1 && (
+                                            <div style={{ marginTop: '0.75rem', padding: '0.6rem', background: 'rgba(34, 197, 94, 0.2)', borderRadius: '0.375rem', color: '#86efac', fontSize: '0.9rem' }}>
+                                                ✅ Trabajo completado
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // Módulo de Control de Trabajo
+        function ControlTrabajoModule({ ordenesSync }) {
+            const [trabajos, setTrabajos] = useState([]);
+
+            const FASES = ['registro', 'en-proceso', 'acabado', 'calidad', 'listo'];
+            const PERSONAS = ['Rafael', 'Juan', 'Aram', 'Montserrat', 'Fidel', 'Kevin'];
+
+            useEffect(() => {
+                const loadTrabajos = () => {
+                    const stored = localStorage.getItem('produccion');
+                    if (stored) {
+                        const items = JSON.parse(stored);
+                        setTrabajos(items);
+                    }
+                };
+
+                loadTrabajos();
+
+                // Escuchar cambios en localStorage
+                const interval = setInterval(loadTrabajos, 1000);
+                return () => clearInterval(interval);
+            }, []);
+
+            const guardarTrabajos = (newTrabajos) => {
+                setTrabajos(newTrabajos);
+                localStorage.setItem('produccion', JSON.stringify(newTrabajos));
+            };
+
+            const getEstadoColor = (fase) => {
+                const colores = {
+                    'registro': '#93c5fd',
+                    'en-proceso': '#fdba74',
+                    'acabado': '#c084fc',
+                    'calidad': '#fca5a5',
+                    'listo': '#86efac'
+                };
+                return colores[fase] || '#d1d5db';
+            };
+
+            const getEstadoLabel = (fase) => {
+                const labels = {
+                    'registro': '📝 Registro',
+                    'en-proceso': '⚙️ En Proceso',
+                    'acabado': '🎨 Acabado',
+                    'calidad': '🔍 Calidad',
+                    'listo': '✅ Listo'
+                };
+                return labels[fase] || fase;
+            };
+
+            const moverFase = (id, currentFase) => {
+                const currentIndex = FASES.indexOf(currentFase);
+                if (currentIndex < FASES.length - 1) {
+                    const newTrabajos = trabajos.map(trabajo =>
+                        trabajo.id === id ? { ...trabajo, fase: FASES[currentIndex + 1] } : trabajo
+                    );
+                    guardarTrabajos(newTrabajos);
+                }
+            };
+
+            const asignarPersona = (id, persona) => {
+                const newTrabajos = trabajos.map(trabajo =>
+                    trabajo.id === id ? { ...trabajo, persona } : trabajo
+                );
+                guardarTrabajos(newTrabajos);
+            };
+
+            return (
+                <div className="module-content">
+                    {trabajos.length === 0 ? (
+                        <p style={{ color: '#9ca3af' }}>No hay trabajos en progreso</p>
+                    ) : (
+                        <div className="control-grid">
+                            {trabajos.map(trabajo => {
+                                const faseIndex = FASES.indexOf(trabajo.fase);
+                                const puedeAvanzar = faseIndex < FASES.length - 1;
+
+                                return (
+                                    <div key={trabajo.id} className="control-card">
+                                        <div className="control-card-header">
+                                            <div className="control-card-title">{trabajo.nombre}</div>
+                                            <div className="control-card-subtitle">
+                                                Estado: <span style={{ color: getEstadoColor(trabajo.fase), fontWeight: '600' }}>
+                                                    {getEstadoLabel(trabajo.fase)}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        <div className="control-card-body">
+                                            <div className="control-field">
+                                                <label>👤 Asignado a:</label>
+                                                <select
+                                                    value={trabajo.persona}
+                                                    onChange={(e) => asignarPersona(trabajo.id, e.target.value)}
+                                                >
+                                                    <option value="— Sin asignar —">— Sin asignar —</option>
+                                                    {PERSONAS.map(p => (
+                                                        <option key={p} value={p}>{p}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+
+                                            <div style={{ fontSize: '0.8rem', color: '#6b7280', paddingTop: '0.5rem', marginTop: 'auto' }}>
+                                                📅 Inicio: {new Date(trabajo.fechaInicio).toLocaleDateString('es-MX')}
+                                            </div>
+                                        </div>
+
+                                        <div className="control-actions">
+                                            {puedeAvanzar && (
+                                                <button
+                                                    className="btn-next"
+                                                    onClick={() => moverFase(trabajo.id, trabajo.fase)}
+                                                >
+                                                    ➡️ Siguiente Fase
+                                                </button>
+                                            )}
+                                            {!puedeAvanzar && (
+                                                <div style={{
+                                                    padding: '0.75rem',
+                                                    background: 'rgba(34, 197, 94, 0.2)',
+                                                    color: '#86efac',
+                                                    borderRadius: '0.375rem',
+                                                    fontSize: '0.95rem',
+                                                    textAlign: 'center',
+                                                    fontWeight: '600',
+                                                    flex: 1
+                                                }}>
+                                                    ✅ Completado
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Componente Principal
+        function ZeraLab() {
+            const [activeModule, setActiveModule] = useState('ordenes');
+            const [ordenCreada, setOrdenCreada] = useState(null);
+
+            const modules = [
+                { id: 'dashboard', label: 'Dashboard', icon: '📊' },
+                { id: 'ordenes', label: 'Órdenes', icon: '📋' },
+                { id: 'produccion', label: 'Producción', icon: '🏭' },
+                { id: 'control', label: 'Control', icon: '✅' },
+                { id: 'asistencia', label: 'Asistencia', icon: '📍' },
+                { id: 'mensajeria', label: 'Mensajería', icon: '💬' },
+                { id: 'cobros', label: 'Cobros', icon: '💰' },
+                { id: 'inventario', label: 'Inventario', icon: '📦' }
+            ];
+
+            const handleOrdenCreada = (orden) => {
+                setOrdenCreada(orden);
+            };
+
+            return (
+                <div className="app-container">
+                    <div className="sidebar">
+                        <div className="sidebar-header">⚙️ ZERA LAB</div>
+                        <div className="sidebar-menu">
+                            {modules.map(module => (
+                                <div
+                                    key={module.id}
+                                    className={`menu-item ${activeModule === module.id ? 'active' : ''}`}
+                                    onClick={() => setActiveModule(module.id)}
+                                >
+                                    <span className="menu-icon">{module.icon}</span>
+                                    <span style={{ display: 'block', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+                                        {module.label}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="main-content">
+                        <div className="module-header">
+                            <h1>{modules.find(m => m.id === activeModule)?.label}</h1>
+                        </div>
+
+                        {activeModule === 'ordenes' && <OrdenesModule onOrdenCreada={handleOrdenCreada} />}
+                        {activeModule === 'produccion' && <ProduccionModule ordenesSync={ordenCreada} />}
+                        {activeModule === 'control' && <ControlTrabajoModule ordenesSync={ordenCreada} />}
+                        {!['ordenes', 'produccion', 'control'].includes(activeModule) && (
+                            <div className="module-content">
+                                <div className="card">
+                                    <div className="card-title">Módulo en desarrollo</div>
+                                    <p style={{ color: '#9ca3af' }}>Este módulo está disponible pronto.</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<ZeraLab />);
+    </script>
+</body>
+</html>
