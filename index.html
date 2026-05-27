@@ -100,33 +100,153 @@ select option { background: var(--bg-card); }
   body { background: #fff !important; color: #000 !important; overflow: visible !important; }
   .no-print { display: none !important; }
 }
-/* ============ RESPONSIVE MOBILE ============ */
+/* ============ RESPONSIVE MOBILE FIRST ============ */
+/* TABLET (768px - 1024px) */
+@media (max-width: 1024px) {
+  aside { width: 68px !important; }
+  aside div:first-child { padding: 16px 14px !important; }
+  aside div:nth-child(2) { display: none !important; }
+}
+
+/* TABLET/SMALL DESKTOP (768px) */
 @media (max-width: 768px) {
   #root { display: flex; flex-direction: column; }
-  body { overflow-y: auto; overflow-x: hidden; }
-  .sidebar { display: none !important; }
-  .main-container { margin-left: 0 !important; }
-  .top-bar { height: 50px; }
-  .top-bar button { padding: 8px 12px; font-size: 12px; }
-  .grid-2col { display: grid !important; grid-template-columns: 1fr !important; gap: 12px !important; }
-  .grid-3col { display: grid !important; grid-template-columns: 1fr !important; gap: 10px !important; }
+  body { overflow-y: auto; overflow-x: hidden; height: auto; }
+
+  /* Sidebar becomes toggleable */
+  aside { position: fixed; left: -68px; top: 0; height: 100vh; z-index: 999; transition: left 0.3s; width: 68px; }
+  aside.visible { left: 0; width: 260px; }
+
+  main { margin-left: 0 !important; width: 100% !important; }
+  header { height: 56px; padding: 0 16px; }
+  header h1 { font-size: 16px !important; }
+
+  /* Grid responsive */
+  div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+
+  /* Spacing */
+  section { padding: 16px 12px !important; }
   .section-header { padding: 12px 16px !important; margin-bottom: 12px !important; }
-  .section-header h2 { font-size: 18px !important; }
-  .subsection { padding: 10px 12px !important; }
-  .subsection h3 { font-size: 14px !important; }
-  .btn { padding: 10px 14px !important; font-size: 12px !important; }
-  .card { padding: 12px !important; margin-bottom: 8px !important; }
-  input, select, textarea { padding: 8px 10px !important; font-size: 13px !important; }
-  .tabs { gap: 4px !important; }
-  .tab-btn { padding: 8px 12px !important; font-size: 11px !important; }
+  .section-header h2 { font-size: 18px !important; line-height: 1.3; }
+  .section-header h1 { font-size: 18px !important; }
+
+  .subsection { padding: 12px !important; margin-bottom: 10px !important; }
+  .subsection h3 { font-size: 14px !important; margin-bottom: 8px !important; }
+
+  /* Buttons - ensure 44px minimum for touch */
+  button { min-height: 44px !important; padding: 10px 14px !important; font-size: 13px !important; }
+  input, select, textarea {
+    min-height: 44px !important;
+    padding: 10px 12px !important;
+    font-size: 16px !important;
+    font-size: 16px; /* Prevent zoom on iOS */
+  }
+
+  /* Cards */
+  .card { padding: 12px !important; margin-bottom: 10px !important; }
+
+  /* Typography */
+  h2 { font-size: 18px !important; }
+  h3 { font-size: 14px !important; }
+
+  /* Kanban - horizontal scroll */
   .kanban-col { min-width: 280px !important; }
+  div[style*="display: grid"][style*="gridTemplateColumns"] { overflow-x: auto !important; }
 }
+
+/* MOBILE (480px) */
 @media (max-width: 480px) {
+  #root { height: auto; }
+  body { height: auto; }
+
+  header { height: 52px; padding: 0 12px; }
+  header h1 { font-size: 14px !important; }
+
+  section { padding: 12px 12px !important; }
+  .section-header { padding: 10px 12px !important; margin-bottom: 10px !important; }
   .section-header h2 { font-size: 16px !important; }
-  .subsection h3 { font-size: 12px !important; }
-  .card { padding: 8px !important; font-size: 12px !important; }
-  .kanban-col { min-width: 240px !important; }
-  .grid-2col { grid-template-columns: 1fr !important; }
+
+  .subsection { padding: 10px !important; margin-bottom: 8px !important; }
+  .subsection h3 { font-size: 13px !important; }
+
+  /* Touch-friendly buttons */
+  button { min-height: 44px !important; padding: 10px 12px !important; font-size: 12px !important; }
+  input, select, textarea {
+    min-height: 44px !important;
+    padding: 10px !important;
+    font-size: 16px !important;
+  }
+
+  /* Cards stacked */
+  .card { padding: 10px !important; margin-bottom: 8px !important; font-size: 12px !important; }
+
+  /* Compact grid */
+  div[style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: 1fr !important; }
+  div[style*="grid-template-columns: repeat"] { grid-template-columns: 1fr !important; }
+
+  /* Kanban - narrower columns */
+  .kanban-col { min-width: 240px !important; max-width: 100% !important; }
+
+  /* Forms */
+  .grid-2col, .grid-3col { grid-template-columns: 1fr !important; gap: 8px !important; }
+
+  /* Badge/Badge-like elements */
+  span[style*="padding"] { padding: 4px 8px !important; font-size: 11px !important; }
+
+  /* Tab buttons - compactos */
+  button[style*="flex"] { padding: 8px 10px !important; font-size: 11px !important; }
+}
+
+/* SMALL MOBILE (< 360px) */
+@media (max-width: 360px) {
+  header { height: 48px; padding: 0 8px; }
+  header h1 { font-size: 13px !important; }
+
+  section { padding: 10px 8px !important; }
+  .section-header { padding: 8px 10px !important; }
+
+  button { font-size: 11px !important; padding: 8px 10px !important; }
+  input, select, textarea { font-size: 15px !important; }
+}
+
+/* DOCTOR PORTAL MOBILE OPTIMIZATION */
+@media (max-width: 768px) {
+  /* Doctor Portal Header */
+  [style*="background: var(--mod-doctores)"] {
+    padding: 12px 16px !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+  }
+
+  [style*="background: var(--mod-doctores)"] > div:first-child {
+    width: 100% !important;
+    justify-content: center !important;
+  }
+
+  [style*="background: var(--mod-doctores)"] button {
+    width: 100% !important;
+    margin-top: 8px !important;
+  }
+
+  /* Tab Navigation - Stack on mobile if needed */
+  [style*="display: flex"][style*="borderBottom: 1px solid"] button {
+    padding: 12px 8px !important;
+    font-size: 12px !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  /* Doctor Portal Cards - Responsive padding */
+  [style*="maxWidth: 700"] {
+    max-width: 100% !important;
+    padding: 0 12px !important;
+    margin: 16px auto !important;
+  }
+
+  [style*="padding: 24"][style*="borderLeft"] {
+    padding: 16px 12px !important;
+  }
 }
 </style>
 </head>
@@ -606,9 +726,7 @@ const MODULES = [
   { id: 'lab-externo', icon: '🔬', label: 'Lab Externo',     desc: 'Fresado y servicios externos', color: 'var(--mod-lab)' },
   { id: 'inventario',  icon: '📦', label: 'Inventario',      desc: 'Materiales', color: 'var(--mod-inventario)' },
   { id: 'tarifas',     icon: '💰', label: 'Tarifas',         desc: 'Lista de precios', color: 'var(--mod-finanzas)' },
-  { id: 'config-ia',   icon: '🤖', label: 'Config IA',       desc: 'API keys y modelos', color: 'var(--mod-finanzas)' },
   { id: 'finanzas',    icon: '📊', label: 'Finanzas',        desc: 'Dinero del lab', color: 'var(--mod-finanzas)' },
-  { id: 'notas-ia',    icon: '🤖', label: 'Notas IA',        desc: 'Análisis automático', color: '#8B5CF6' },
   { id: 'nomina',      icon: '💵', label: 'Nómina',          desc: 'Sueldos y comisiones', color: 'var(--mod-nomina)' },
   { id: 'corte',       icon: '📑', label: 'Corte Semanal',   desc: 'Resumen de la semana', color: 'var(--mod-corte)' },
   { id: 'doctores',    icon: '🦷', label: 'Portal Doctores', desc: 'Para los doctores', color: 'var(--mod-doctores)' },
@@ -625,12 +743,12 @@ const USERS = [
 ];
 
 const ROLE_MODULES = {
-  'itzel':  ['dashboard','ordenes','produccion','checkin','mensajeria','cobros','lab-externo','inventario','tarifas','config-ia','finanzas','notas-ia','nomina','corte','doctores','config'],
-  'montserrat':   ['dashboard','ordenes','produccion','cobros','inventario','tarifas','lab-externo','notas-ia','corte','doctores','config'],
-  'rafael': ['dashboard','ordenes','produccion','checkin','lab-externo','inventario','notas-ia'],
-  'aram': ['dashboard','ordenes','produccion','notas-ia'],
-  'fidel': ['dashboard','produccion','notas-ia'],
-  'kevin': ['dashboard','ordenes','produccion','lab-externo','notas-ia'],
+  'itzel':  ['dashboard','ordenes','produccion','checkin','mensajeria','cobros','lab-externo','inventario','tarifas','finanzas','nomina','corte','doctores','config'],
+  'montserrat':   ['dashboard','ordenes','produccion','cobros','inventario','tarifas','lab-externo','corte','doctores','config'],
+  'rafael': ['dashboard','ordenes','produccion','checkin','lab-externo','inventario'],
+  'aram': ['dashboard','ordenes','produccion'],
+  'fidel': ['dashboard','produccion'],
+  'kevin': ['dashboard','ordenes','produccion','lab-externo'],
 };
 
 const ROLE_DASHBOARD = {
@@ -811,27 +929,7 @@ function SubSection({ title, color, children, description }) {
 function LogoSVG({ size = 'md' }) {
   const s = size==='sm'?40:size==='lg'?90:60;
   return (
-    <svg width={s} height={s} viewBox="0 0 100 120" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink:0 }}>
-      {/* Contorno exterior del diente grande */}
-      <path d="M 30 25 Q 25 30 25 45 L 25 75 Q 25 90 50 105 Q 75 90 75 75 L 75 45 Q 75 30 70 25 Q 65 20 50 20 Q 35 20 30 25 Z"
-            fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
-
-      {/* Diente interior/resaltado */}
-      <path d="M 38 32 Q 35 37 35 48 L 35 75 Q 35 85 50 95 Q 65 85 65 75 L 65 48 Q 65 37 62 32 Q 60 28 50 28 Q 40 28 38 32 Z"
-            fill="currentColor" opacity="0.85" />
-
-      {/* Raíz/Implante interior */}
-      <g fill="currentColor" opacity="0.6">
-        <rect x="46" y="75" width="8" height="15" rx="2" />
-        <circle cx="50" cy="72" r="5" />
-        <line x1="48" y1="85" x2="45" y2="95" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-        <line x1="50" y1="85" x2="50" y2="96" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-        <line x1="52" y1="85" x2="55" y2="95" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      </g>
-
-      {/* Highlight/brillo */}
-      <ellipse cx="42" cy="40" rx="6" ry="10" fill="currentColor" opacity="0.25" />
-    </svg>
+    <img src="logo-zera.png" alt="ZERA LAB" style={{ width:s, height:s, objectFit:'contain', flexShrink:0, filter:'brightness(1) contrast(1)' }} />
   );
 }
 
@@ -1871,9 +1969,18 @@ function ProduccionIntegradaModule() {
     const orderId = parseInt(e.dataTransfer.getData('orderId'));
     const orden = ordenes.find(o => o.id === orderId);
     if (orden && orden.estado !== nuevoEstado) {
-      // Show assignment dialog
+      // Mover directamente sin dialog
+      const ahora = new Date();
+      const fecha = ahora.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
       const defaultAsignado = getDefaultAssignment(nuevoEstado);
-      setAssignmentDialog({ visible: true, orden: orden, nuevoEstado: nuevoEstado, asignado: defaultAsignado });
+      const nuevasOrdenes = ordenes.map(o => {
+        if (o.id === orderId) {
+          return { ...o, estado: nuevoEstado, asignado_a: defaultAsignado, historial: [...o.historial, { fase: nuevoEstado, fecha: fecha, usuario: defaultAsignado, notas: `Movido a ${PRODUCTION_PHASES.find(p => p.id === nuevoEstado)?.label}` }] };
+        }
+        return o;
+      });
+      setOrdenes(nuevasOrdenes);
+      localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
     }
   };
 
@@ -1897,6 +2004,16 @@ function ProduccionIntegradaModule() {
     const tarifas = JSON.parse(localStorage.getItem('tarifasPrecios') || '[]');
     const tarifa = tarifas.find(t => t.tipo.toLowerCase() === trabajo.toLowerCase());
     return tarifa ? tarifa.costoBase * unidades : 0;
+  };
+
+  const calcularDiasParaEntrega = (fechaEntrega) => {
+    if (!fechaEntrega) return null;
+    const entrega = new Date(fechaEntrega);
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0);
+    entrega.setHours(0, 0, 0, 0);
+    const dias = Math.ceil((entrega - hoy) / (1000 * 60 * 60 * 24));
+    return dias;
   };
 
   const registrarCostoOrden = (orderId, costo, trabajo, unidades) => {
@@ -1989,16 +2106,27 @@ function ProduccionIntegradaModule() {
               <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '6px' }}>{getOrdenesPorFase(phase.id).length} órdenes</div>
             </div>
             <div style={{ flex: 1, overflow: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0 }}>
-              {getOrdenesPorFase(phase.id).map(orden => (
-                <div key={orden.id} draggable onDragStart={(e) => handleDragStart(e, orden)} onClick={() => openDrawer(orden)} style={{ background: 'var(--bg-secondary)', border: `2px solid ${phase.color}40`, borderRadius: 'var(--radius-md)', padding: '12px', cursor: 'grab', transition: 'all 0.2s' }} onMouseEnter={(e) => e.target.style.transform = 'translateY(-2px)'} onMouseLeave={(e) => e.target.style.transform = 'none'}>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{orden.folio}</div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>👨‍⚕️ {orden.doctor}</div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', cursor: 'pointer' }}>👤 {orden.paciente}</div>
-                  <div style={{ fontSize: '12px', color: phase.color, marginTop: '6px', fontWeight: 600 }}>{orden.trabajo}</div>
-                  {orden.costo > 0 && <div style={{ fontSize: '11px', color: 'var(--mod-finanzas)', marginTop: '4px', fontWeight: 700 }}>💰 ${orden.costo.toLocaleString('es-MX')}</div>}
-                  {orden.asignado_a && <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px', background: 'var(--bg-input)', padding: '4px 8px', borderRadius: '4px' }}>👨‍🔧 {orden.asignado_a}</div>}
-                </div>
-              ))}
+              {getOrdenesPorFase(phase.id).map(orden => {
+                const diasEntrega = orden.fechaEntrega ? calcularDiasParaEntrega(orden.fechaEntrega) : null;
+                const colorAlerta = diasEntrega !== null ? (diasEntrega < 0 ? '#EF4444' : diasEntrega === 0 ? '#FBBF24' : diasEntrega <= 2 ? '#F97316' : '#34D399') : 'transparent';
+                return (
+                  <div key={orden.id} draggable onDragStart={(e) => handleDragStart(e, orden)} onClick={() => openDrawer(orden)} style={{ background: 'var(--bg-secondary)', border: `2px solid ${phase.color}40`, borderRadius: 'var(--radius-md)', padding: '12px', cursor: 'grab', transition: 'all 0.2s', borderTop: `3px solid ${colorAlerta}` }} onMouseEnter={(e) => e.target.style.transform = 'translateY(-2px)'} onMouseLeave={(e) => e.target.style.transform = 'none'}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '6px' }}>
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{orden.folio}</div>
+                      {diasEntrega !== null && (
+                        <div style={{ fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '3px', background: colorAlerta + '22', color: colorAlerta }}>
+                          {diasEntrega < 0 ? `⏰ VENCIDA` : diasEntrega === 0 ? `⚠️ HOY` : `📅 ${diasEntrega}d`}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>👨‍⚕️ {orden.doctor}</div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', cursor: 'pointer' }}>👤 {orden.paciente}</div>
+                    <div style={{ fontSize: '12px', color: phase.color, marginTop: '6px', fontWeight: 600 }}>{orden.trabajo}</div>
+                    {orden.costo > 0 && <div style={{ fontSize: '11px', color: 'var(--mod-finanzas)', marginTop: '4px', fontWeight: 700 }}>💰 ${orden.costo.toLocaleString('es-MX')}</div>}
+                    {orden.asignado_a && <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px', background: 'var(--bg-input)', padding: '4px 8px', borderRadius: '4px' }}>👨‍🔧 {orden.asignado_a}</div>}
+                  </div>
+                );
+              })}
             </div>
           </div>
         ))}
@@ -2300,7 +2428,9 @@ function ProduccionIntegradaModule() {
 function CheckinModule({ currentUser }) {
   const [checkinLocation, setCheckinLocation] = useState(null);
   const [checkinTime, setCheckinTime] = useState(null);
+  const [checkoutTime, setCheckoutTime] = useState(null);
   const [gpsEnabled, setGpsEnabled] = useState(false);
+  const [horasHoy, setHorasHoy] = useState(0);
 
   const allTecnicos = ['Rafael','Aram','Fidel','Kevin','Montserrat'];
   const isAdmin = currentUser && (currentUser.id === 'itzel' || currentUser.id === 'montserrat');
@@ -2320,9 +2450,11 @@ function CheckinModule({ currentUser }) {
           const { latitude, longitude } = position.coords;
           const distance = Math.sqrt(Math.pow(latitude - 32.5149, 2) + Math.pow(longitude - (-117.0382), 2)) * 111; // aprox km
           const isNearLab = distance < 2; // dentro de 2km del lab
+          const ahora = new Date().toLocaleTimeString();
           setCheckinLocation({ lat: latitude, lon: longitude, near: isNearLab, distance: distance.toFixed(1) });
-          setCheckinTime(new Date().toLocaleTimeString());
-          alert(`✅ Check-in registrado a las ${new Date().toLocaleTimeString()}\n${isNearLab ? '📍 Ubicación: Laboratorio ✓' : `📍 Ubicación: ${distance.toFixed(1)}km del laboratorio (⚠️ revisar)`}`);
+          setCheckinTime(ahora);
+          localStorage.setItem(`checkin_${currentUser?.name}_${new Date().toLocaleDateString('es-MX')}`, ahora);
+          alert(`✅ Check-in registrado a las ${ahora}\n${isNearLab ? '📍 Ubicación: Laboratorio ✓' : `📍 Ubicación: ${distance.toFixed(1)}km del laboratorio (⚠️ revisar)`}`);
         },
         () => {
           alert('No se pudo obtener la ubicación. Usa el check-in manual.');
@@ -2334,27 +2466,61 @@ function CheckinModule({ currentUser }) {
     }
   };
 
+  const handleGpsCheckout = () => {
+    const ahora = new Date();
+    const horaCheckout = ahora.toLocaleTimeString();
+    setCheckoutTime(horaCheckout);
+    localStorage.setItem(`checkout_${currentUser?.name}_${ahora.toLocaleDateString('es-MX')}`, horaCheckout);
+
+    // Calcular horas trabajadas
+    if (checkinTime) {
+      const [hci, mci] = checkinTime.split(':').map(Number);
+      const [hco, mco] = horaCheckout.split(':').map(Number);
+      const minutosCheckin = hci * 60 + mci;
+      const minutosCheckout = hco * 60 + mco;
+      const diferencia = Math.max(0, minutosCheckout - minutosCheckin) / 60;
+      setHorasHoy(diferencia.toFixed(1));
+    }
+
+    alert(`✅ Checkout registrado a las ${horaCheckout}\n⏰ Horas trabajadas hoy: ${horasHoy} horas`);
+  };
+
   return (
     <div style={{ animation:'fadeIn 0.3s' }}>
       <SectionHeader title="Asistencia y Check-in" subtitle={isAdmin ? 'Vista completa de todo el equipo' : `Tus registros, ${currentUser?.name}`} color="var(--mod-checkin)" icon="📍" />
 
       {!isAdmin && (
         <div style={{ marginBottom:20 }}>
-          <SubSection title="Check-in" color="var(--mod-checkin)">
-            <button onClick={handleGpsCheckin} disabled={gpsEnabled} style={{ width:'100%', padding:16, borderRadius:'var(--radius-md)', background: gpsEnabled ? 'var(--success)' : 'var(--mod-checkin)', border:'none', color:'#fff', cursor: gpsEnabled ? 'not-allowed' : 'pointer', fontSize:15, fontWeight:700, marginBottom:8 }}>
-              {gpsEnabled ? '✅ Check-in registrado' : '📍 Check-in'}
-            </button>
+          <SubSection title="Asistencia" color="var(--mod-checkin)">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+              <button onClick={handleGpsCheckin} disabled={gpsEnabled} style={{ padding:14, borderRadius:'var(--radius-md)', background: gpsEnabled ? 'var(--success)' : 'var(--mod-checkin)', border:'none', color:'#fff', cursor: gpsEnabled ? 'not-allowed' : 'pointer', fontSize:14, fontWeight:700 }}>
+                {gpsEnabled ? '✅ Entrada' : '📍 Check-in'}
+              </button>
+              <button onClick={handleGpsCheckout} disabled={!checkinTime || checkoutTime} style={{ padding:14, borderRadius:'var(--radius-md)', background: checkoutTime ? '#34D399' : (checkinTime && !checkoutTime ? 'var(--warning)' : 'var(--bg-card)'), border:'none', color: checkoutTime || (checkinTime && !checkoutTime) ? '#000' : 'var(--text-muted)', cursor: (checkinTime && !checkoutTime) ? 'pointer' : 'not-allowed', fontSize:14, fontWeight:700 }}>
+                {checkoutTime ? '✅ Salida' : (checkinTime ? '🚪 Check-out' : '⏳ Espera entrada')}
+              </button>
+            </div>
+
             {checkinTime && (
-              <div style={{ padding:12, background:'var(--accent-blue-soft)', borderRadius:'var(--radius-md)' }}>
+              <div style={{ padding:14, background:'var(--accent-blue-soft)', borderRadius:'var(--radius-md)', marginBottom: '12px' }}>
+                <div style={{ fontSize:13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>📍 ENTRADA</div>
                 <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:4 }}>Hora: <strong>{checkinTime}</strong></div>
                 {checkinLocation && (
                   <div style={{ fontSize:12, marginTop:4 }}>
-                    <div style={{ marginBottom:2 }}>📍 Distancia: {checkinLocation.distance}km del laboratorio</div>
-                    <div style={{ color: checkinLocation.near ? 'var(--success)' : 'var(--warning)' }}>
+                    <div style={{ marginBottom:2 }}>📍 Distancia: {checkinLocation.distance}km del lab</div>
+                    <div style={{ color: checkinLocation.near ? 'var(--success)' : 'var(--warning)', fontWeight: 600 }}>
                       {checkinLocation.near ? '✓ Dentro' : '⚠️ Fuera'}
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+
+            {checkoutTime && (
+              <div style={{ padding:14, background:'rgba(52, 211, 153, 0.1)', borderRadius:'var(--radius-md)' }}>
+                <div style={{ fontSize:13, fontWeight: 700, color: '#34D399', marginBottom: '8px' }}>🚪 SALIDA</div>
+                <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom: '8px' }}>Hora: <strong>{checkoutTime}</strong></div>
+                <div style={{ fontSize:13, fontWeight: 700, color: '#34D399' }}>⏰ Hoy: {horasHoy}h</div>
               </div>
             )}
           </SubSection>
@@ -2396,13 +2562,95 @@ function CheckinModule({ currentUser }) {
 // MENSAJERÍA
 // ============================================================
 function MensajeriaModule() {
+  const [gastosMessenger, setGastosMessenger] = React.useState(JSON.parse(localStorage.getItem('gastosMessenger') || '[]'));
+  const [showAddGasto, setShowAddGasto] = React.useState(false);
+  const [nuevoGasto, setNuevoGasto] = React.useState({ tipo: 'taxi', monto: '', foto: null, hora: null });
+  const gastoFileRef = React.useRef(null);
+
+  const handleAddGasto = () => {
+    if (!nuevoGasto.monto || (nuevoGasto.tipo === 'taxi' && !nuevoGasto.foto)) {
+      alert('Completa los campos requeridos');
+      return;
+    }
+    const ahora = new Date();
+    const hora = ahora.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const gasto = {
+      id: Date.now(),
+      tipo: nuevoGasto.tipo,
+      monto: parseFloat(nuevoGasto.monto),
+      foto: nuevoGasto.foto,
+      hora: hora,
+      fecha: ahora.toLocaleDateString('es-MX'),
+      confirmado: false
+    };
+    const nuevosGastos = [gasto, ...gastosMessenger];
+    setGastosMessenger(nuevosGastos);
+    localStorage.setItem('gastosMessenger', JSON.stringify(nuevosGastos));
+    setNuevoGasto({ tipo: 'taxi', monto: '', foto: null, hora: null });
+    setShowAddGasto(false);
+  };
+
   return (
     <div style={{ animation:'fadeIn 0.3s' }}>
-      <SectionHeader title="Mensajería y Entregas" subtitle="Recolecciones y entregas por Kevin" color="var(--mod-mensajeria)" icon="🚗" />
+      <SectionHeader title="Mensajería y Entregas" subtitle="Recolecciones y entregas por Kevin" color="var(--mod-mensajeria)" icon="🚗">
+        <button onClick={() => setShowAddGasto(!showAddGasto)} style={{ padding: '8px 16px', background: showAddGasto ? 'var(--mod-mensajeria)' : 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: showAddGasto ? '#fff' : 'var(--text-secondary)', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>💸 Registrar gasto</button>
+      </SectionHeader>
 
-      <InfoCard icon="📱" title="Plan de integración con WhatsApp" description="Para conectar este sistema con WhatsApp de los doctores, se necesita configurar un bot de WhatsApp Business API (por ejemplo con Twilio o Meta Business). El bot recibirá mensajes de los doctores (pedidos, preguntas sobre sus órdenes) y los enviará aquí automáticamente como pedido nuevo. Esto se implementará cuando el sistema esté en Supabase con backend. Por ahora, esta sección es para coordinar las entregas de Kevin manualmente." color="var(--mod-mensajeria)" />
+      {showAddGasto && (
+        <div style={{ background: 'var(--bg-card)', padding: '20px', borderRadius: 'var(--radius-lg)', border: '2px solid var(--mod-mensajeria)', marginBottom: '16px' }}>
+          <h3 style={{ marginBottom: '12px', color: 'var(--text-primary)', fontWeight: 700 }}>💸 Registrar gasto de mensajería</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px' }}>Tipo de gasto:</label>
+              <select value={nuevoGasto.tipo} onChange={(e) => setNuevoGasto({ ...nuevoGasto, tipo: e.target.value })} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', width: '100%' }}>
+                <option value="taxi">🚕 Taxi</option>
+                <option value="otro">📦 Otro gasto</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px' }}>Monto ($MXN):</label>
+              <input type="number" value={nuevoGasto.monto} onChange={(e) => setNuevoGasto({ ...nuevoGasto, monto: e.target.value })} placeholder="100.00" style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', width: '100%' }} />
+            </div>
+          </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+          {nuevoGasto.tipo === 'taxi' && (
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }}>📸 Foto evidencia de taxi:</label>
+              <input
+                ref={gastoFileRef}
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (evt) => {
+                      setNuevoGasto({ ...nuevoGasto, foto: evt.target.result });
+                    };
+                    reader.readAsDataURL(file);
+                  }
+                }}
+                style={{ display: 'none' }}
+              />
+              <button onClick={() => gastoFileRef.current?.click()} style={{ width: '100%', padding: '12px', background: 'var(--bg-input)', border: '2px dashed var(--mod-mensajeria)', borderRadius: 'var(--radius-md)', color: 'var(--mod-mensajeria)', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>
+                {nuevoGasto.foto ? '✅ Foto capturada' : '📸 Capturar foto'}
+              </button>
+              {nuevoGasto.foto && (
+                <div style={{ marginTop: '8px', maxHeight: '150px', borderRadius: 'var(--radius-md)', overflow: 'hidden', border: '1px solid var(--border-subtle)' }}>
+                  <img src={nuevoGasto.foto} alt="Gasto" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: '12px' }}>
+            <button onClick={() => setShowAddGasto(false)} style={{ flex: 1, padding: '10px 16px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>✕ Cancelar</button>
+            <button onClick={handleAddGasto} style={{ flex: 1, padding: '10px 16px', background: 'var(--mod-mensajeria)', border: 'none', borderRadius: 'var(--radius-md)', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>💾 Guardar gasto</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom: '24px' }}>
         <SubSection title="Recolecciones pendientes" color="var(--mod-mensajeria)">
           {[
             { doctor:'Dr. Martínez', clinica:'Dental Care TJ', hora:'10:00 AM', tipo:'Recoger impresiones', urgente:true },
@@ -2436,6 +2684,43 @@ function MensajeriaModule() {
           ))}
         </SubSection>
       </div>
+
+      {gastosMessenger.length > 0 && (
+        <SubSection title={`Gastos registrados hoy (${gastosMessenger.length})`} color="var(--mod-mensajeria)">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px' }}>
+            {gastosMessenger.map((gasto) => (
+              <div key={gasto.id} style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', padding: '16px', border: '1px solid var(--border-subtle)', borderLeft: `4px solid ${gasto.tipo === 'taxi' ? '#F97316' : 'var(--mod-mensajeria)'}` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: gasto.tipo === 'taxi' ? '#F97316' : 'var(--text-primary)' }}>
+                    {gasto.tipo === 'taxi' ? '🚕 TAXI' : '📦 OTRO'}
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{gasto.hora}</div>
+                </div>
+                <div style={{ fontSize: '18px', fontWeight: 700, color: 'var(--mod-finanzas)', marginBottom: '12px' }}>
+                  ${gasto.monto.toFixed(2)} MXN
+                </div>
+                {gasto.foto && (
+                  <div style={{ maxHeight: '120px', borderRadius: 'var(--radius-md)', overflow: 'hidden', marginBottom: '12px', border: '1px solid var(--border-subtle)' }}>
+                    <img src={gasto.foto} alt="Gasto" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={() => {
+                      const nuevosGastos = gastosMessenger.map(g => g.id === gasto.id ? {...g, confirmado: !g.confirmado} : g);
+                      setGastosMessenger(nuevosGastos);
+                      localStorage.setItem('gastosMessenger', JSON.stringify(nuevosGastos));
+                    }}
+                    style={{ flex: 1, padding: '8px 12px', background: gasto.confirmado ? 'var(--success)' : 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: gasto.confirmado ? '#fff' : 'var(--text-secondary)', cursor: 'pointer', fontWeight: 600, fontSize: '12px' }}
+                  >
+                    {gasto.confirmado ? '✅ Confirmado' : '⏳ Pendiente'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </SubSection>
+      )}
     </div>
   );
 }
@@ -3465,6 +3750,40 @@ function NominaModule() {
       { nombre:'Juan/Abril', rol:'Escaneo y Servicios', horas:totalEscaneos>0?Math.ceil(totalEscaneos/10):0, trabajos:escaneosPorUnidad, base:0, comisiones:0, escaneos:totalEscaneos, total:totalEscaneos, aprobado:false },
     ];
   });
+
+  // Admin de Horas — Editable employee expected hours
+  const [horasEmpleados, setHorasEmpleados] = useState(() => {
+    const saved = localStorage.getItem('horasEmpleados');
+    return saved ? JSON.parse(saved) : {
+      'Rafael': 45, 'Montserrat': 42, 'Aram': 40, 'Fidel': 47, 'Kevin': 42.5
+    };
+  });
+  const [nuevoEmpleado, setNuevoEmpleado] = useState({ nombre: '', horas: '' });
+
+  const agregarEmpleado = () => {
+    if (!nuevoEmpleado.nombre.trim() || !nuevoEmpleado.horas) {
+      alert('Completa nombre y horas');
+      return;
+    }
+    const actualizado = { ...horasEmpleados, [nuevoEmpleado.nombre]: parseFloat(nuevoEmpleado.horas) };
+    setHorasEmpleados(actualizado);
+    localStorage.setItem('horasEmpleados', JSON.stringify(actualizado));
+    setNuevoEmpleado({ nombre: '', horas: '' });
+  };
+
+  const quitarEmpleado = (nombre) => {
+    const actualizado = { ...horasEmpleados };
+    delete actualizado[nombre];
+    setHorasEmpleados(actualizado);
+    localStorage.setItem('horasEmpleados', JSON.stringify(actualizado));
+  };
+
+  const actualizarHoras = (nombre, nuevasHoras) => {
+    const actualizado = { ...horasEmpleados, [nombre]: parseFloat(nuevasHoras) || 0 };
+    setHorasEmpleados(actualizado);
+    localStorage.setItem('horasEmpleados', JSON.stringify(actualizado));
+  };
+
   const totalNomina = data.reduce((s,d) => s+d.total, 0);
   const aprobar = (nombre) => setData(data.map(d => d.nombre===nombre ? {...d, aprobado:true} : d));
 
@@ -3473,6 +3792,53 @@ function NominaModule() {
       <SectionHeader title="Nómina y Comisiones" subtitle={`Semana 19-25 Mayo — Total: $${totalNomina.toLocaleString()}`} color="var(--mod-nomina)" icon="💵" />
 
       <InfoCard icon="📌" title="Reglas de comisiones" description="Solo Rafael y Montserrat reciben comisiones por trabajo. Aram, Fidel y Kevin reciben salario base fijo. Las comisiones se calculan con base en los tiempos registrados en la sección de Tiempos." color="var(--mod-nomina)" />
+
+      {/* Admin de Horas — pequeña sección para gestionar horas */}
+      <SubSection title="⏰ Admin de Horas" color="var(--mod-nomina)" description="Edita las horas esperadas de cada empleado">
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))', gap:10, marginBottom:16 }}>
+          {Object.entries(horasEmpleados).map(([nombre, horas]) => (
+            <div key={nombre} style={{ background:'var(--bg-primary)', padding:12, borderRadius:'var(--radius-md)', border:'1px solid var(--border-subtle)' }}>
+              <div style={{ fontSize:12, fontWeight:700, color:'var(--text-muted)', marginBottom:6 }}>{nombre}</div>
+              <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                <input
+                  type="number"
+                  value={horas}
+                  onChange={(e) => actualizarHoras(nombre, e.target.value)}
+                  style={{ flex:1, padding:'6px', background:'var(--bg-input)', border:'1px solid var(--border-subtle)', borderRadius:'4px', color:'#fff', fontSize:13, fontWeight:700 }}
+                />
+                <button
+                  onClick={() => quitarEmpleado(nombre)}
+                  style={{ padding:'6px 8px', background:'rgba(239,68,68,0.2)', border:'none', color:'var(--danger)', borderRadius:'4px', cursor:'pointer', fontSize:12, fontWeight:600 }}
+                >
+                  🗑️
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 120px', gap:8 }}>
+          <input
+            type="text"
+            value={nuevoEmpleado.nombre}
+            onChange={(e) => setNuevoEmpleado({ ...nuevoEmpleado, nombre: e.target.value })}
+            placeholder="Nombre"
+            style={{ padding:'10px', background:'var(--bg-input)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:'#fff', fontSize:13 }}
+          />
+          <input
+            type="number"
+            value={nuevoEmpleado.horas}
+            onChange={(e) => setNuevoEmpleado({ ...nuevoEmpleado, horas: e.target.value })}
+            placeholder="Horas/día"
+            style={{ padding:'10px', background:'var(--bg-input)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:'#fff', fontSize:13 }}
+          />
+          <button
+            onClick={agregarEmpleado}
+            style={{ padding:'10px', background:'var(--mod-nomina)', border:'none', color:'#fff', borderRadius:'var(--radius-md)', cursor:'pointer', fontSize:13, fontWeight:700 }}
+          >
+            + Agregar
+          </button>
+        </div>
+      </SubSection>
 
       {data.map(d => {
         const tieneComision = d.comisiones > 0;
@@ -4116,36 +4482,80 @@ function Dashboard({ currentUser, onNavigate }) {
 function Sidebar({ activeModule, onSelect, collapsed, onToggle, currentUser }) {
   const allowedModules = ROLE_MODULES[currentUser.id] || [];
   const filteredModules = MODULES.filter(m => allowedModules.includes(m.id));
+  const isMobile = window.innerWidth < 768;
+
   return (
-    <aside style={{ width:collapsed?68:260, height:'100vh', background:'var(--bg-sidebar)', borderRight:'1px solid var(--border-subtle)', display:'flex', flexDirection:'column', transition:'width 0.25s', flexShrink:0, zIndex:10 }}>
-      <div style={{ padding:collapsed?'16px 14px':'16px 20px', borderBottom:'1px solid var(--border-subtle)', display:'flex', alignItems:'center', gap:12, minHeight:64 }}>
-        <LogoPlaceholder size="sm" />
-        {!collapsed && <div><div style={{ fontSize:16, fontWeight:800, letterSpacing:'0.5px' }}>ZERA LAB</div></div>}
+    <aside style={{
+      width: collapsed ? 68 : 260,
+      height: '100vh',
+      background: 'var(--bg-sidebar)',
+      borderRight: '1px solid var(--border-subtle)',
+      display: 'flex',
+      flexDirection: 'column',
+      transition: 'width 0.25s',
+      flexShrink: 0,
+      zIndex: 10,
+      position: isMobile ? 'fixed' : 'relative',
+      left: isMobile && collapsed ? -68 : 0,
+      top: 0
+    }}>
+      <div style={{
+        padding: collapsed ? '16px 14px' : '16px 20px',
+        borderBottom: '1px solid var(--border-subtle)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        minHeight: 64
+      }}>
+        <LogoPlaceholder size={collapsed ? 'sm' : 'md'} />
+        {!collapsed && <div><div style={{ fontSize: 16, fontWeight: 800, letterSpacing: '0.5px' }}>ZERA LAB</div></div>}
       </div>
-      <nav style={{ flex:1, overflowY:'auto', padding:8 }}>
+      <nav style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
         {filteredModules.map(m => {
           const active = activeModule === m.id;
           return (
             <button key={m.id} onClick={() => onSelect(m.id)} style={{
-              width:'100%', display:'flex', alignItems:'center', gap:12,
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
               padding: collapsed ? '12px 0' : '12px 14px',
               justifyContent: collapsed ? 'center' : 'flex-start',
-              borderRadius:'var(--radius-md)', border:'none', cursor:'pointer', transition:'all 0.15s', marginBottom:2,
+              borderRadius: 'var(--radius-md)',
+              border: 'none',
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+              marginBottom: 2,
               background: active ? `${m.color}18` : 'transparent',
               borderLeft: active ? `3px solid ${m.color}` : '3px solid transparent',
               color: active ? m.color : 'var(--text-secondary)',
+              minHeight: 44,
+              fontSize: collapsed ? 20 : 14,
+              fontWeight: active ? 700 : 500
             }}
               onMouseEnter={e => { if(!active) e.currentTarget.style.background = 'var(--bg-card-hover)'; }}
               onMouseLeave={e => { if(!active) e.currentTarget.style.background = 'transparent'; }}
             >
-              <span style={{ fontSize:collapsed?20:18, width:collapsed?'auto':24, textAlign:'center' }}>{m.icon}</span>
-              {!collapsed && <span style={{ fontSize:14, fontWeight:active?700:500 }}>{m.label}</span>}
+              <span style={{ fontSize: collapsed ? 20 : 18, width: collapsed ? 'auto' : 24, textAlign: 'center' }}>{m.icon}</span>
+              {!collapsed && <span style={{ fontSize: 14, fontWeight: active ? 700 : 500 }}>{m.label}</span>}
             </button>
           );
         })}
       </nav>
-      <button onClick={onToggle} style={{ padding:14, borderTop:'1px solid var(--border-subtle)', background:'none', border:'none', color:'var(--text-muted)', cursor:'pointer', fontSize:16 }}>
-        {collapsed ? '→' : '← Colapsar'}
+      <button onClick={onToggle} style={{
+        padding: 14,
+        borderTop: '1px solid var(--border-subtle)',
+        background: 'none',
+        border: 'none',
+        color: 'var(--text-muted)',
+        cursor: 'pointer',
+        fontSize: 16,
+        minHeight: 44,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+      }}>
+        {collapsed ? '☰' : '✕'}
       </button>
     </aside>
   );
@@ -4155,14 +4565,55 @@ function Sidebar({ activeModule, onSelect, collapsed, onToggle, currentUser }) {
 // HEADER
 // ============================================================
 function Header({ module, currentUser, onLogout }) {
+  const isMobile = window.innerWidth < 768;
+  const isSmallMobile = window.innerWidth < 480;
+
   return (
-    <header style={{ height:60, borderBottom:'1px solid var(--border-subtle)', display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 24px', background:'var(--bg-secondary)', flexShrink:0 }}>
-      <div>
-        <h1 style={{ fontSize:18, fontWeight:800, color: module.color || 'var(--text-primary)' }}>{module.icon} {module.label}</h1>
+    <header style={{
+      height: isSmallMobile ? 52 : isMobile ? 56 : 60,
+      borderBottom:'1px solid var(--border-subtle)',
+      display:'flex',
+      alignItems:'center',
+      justifyContent:'space-between',
+      padding: `0 ${isSmallMobile ? 12 : isMobile ? 16 : 24}px`,
+      background:'var(--bg-secondary)',
+      flexShrink:0,
+      gap: 12
+    }}>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <h1 style={{
+          fontSize: isSmallMobile ? 14 : isMobile ? 16 : 18,
+          fontWeight:800,
+          color: module.color || 'var(--text-primary)',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis'
+        }}>{module.icon} {!isSmallMobile && module.label}</h1>
       </div>
-      <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-        <div style={{ textAlign:'right' }}><div style={{ fontSize:14, fontWeight:600 }}>{currentUser.name}</div><div style={{ fontSize:11, color:'var(--text-muted)' }}>{currentUser.role}</div></div>
-        <button onClick={onLogout} style={{ padding:'8px 14px', borderRadius:'var(--radius-md)', background:'rgba(248,113,113,0.1)', border:'1px solid rgba(248,113,113,0.3)', color:'var(--danger)', cursor:'pointer', fontSize:13, fontWeight:600 }}>Salir</button>
+      <div style={{
+        display:'flex',
+        alignItems:'center',
+        gap: isSmallMobile ? 8 : 12,
+        minWidth: 0
+      }}>
+        {!isSmallMobile && <div style={{ textAlign:'right', minWidth: 0 }}>
+          <div style={{ fontSize: isMobile ? 12 : 14, fontWeight:600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{currentUser.name}</div>
+          <div style={{ fontSize:10, color:'var(--text-muted)', whiteSpace: 'nowrap' }}>{currentUser.role}</div>
+        </div>}
+        <button onClick={onLogout} style={{
+          padding: isSmallMobile ? '8px 10px' : isMobile ? '8px 12px' : '8px 14px',
+          borderRadius:'var(--radius-md)',
+          background:'rgba(248,113,113,0.1)',
+          border:'1px solid rgba(248,113,113,0.3)',
+          color:'var(--danger)',
+          cursor:'pointer',
+          fontSize: isSmallMobile ? 11 : isMobile ? 12 : 13,
+          fontWeight:600,
+          minWidth: 44,
+          minHeight: 44
+        }}>
+          {isSmallMobile ? '✕' : 'Salir'}
+        </button>
       </div>
     </header>
   );
@@ -4178,6 +4629,14 @@ function DoctorPortal({ doctor, onLogout }) {
     { id:1, paciente:'Carlos Méndez', fecha:'2026-05-23', hora:'10:00', estado:'confirmado' },
     { id:2, paciente:'Laura Vega', fecha:'2026-05-28', hora:'15:30', estado:'pendiente' },
   ]);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  // Mobile detection with resize listener
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const ordenes = [
     { orden:'ZL-0001', paciente:'María García', trabajo:'Corona Zirconia ×2', estatus:'En proceso', fecha:'27 May' },
@@ -4199,45 +4658,45 @@ function DoctorPortal({ doctor, onLogout }) {
 
   return (
     <div style={{ minHeight:'100vh', background:'var(--bg-primary)' }}>
-      <div style={{ background:'var(--mod-doctores)', padding:'20px 24px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-          <LogoPlaceholder size="sm" />
-          <div><div style={{ fontSize:20, fontWeight:900, color:'#fff' }}>ZERA LAB</div><div style={{ fontSize:13, color:'rgba(255,255,255,0.8)' }}>{doctor.nombre}</div></div>
+      <div style={{ background:'var(--mod-doctores)', padding: isMobile ? '12px 16px' : '20px 24px', display:'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent:'space-between', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? 12 : 16 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:12, justifyContent: isMobile ? 'center' : 'flex-start' }}>
+          <LogoPlaceholder size={isMobile ? "sm" : "md"} />
+          <div><div style={{ fontSize: isMobile ? 16 : 20, fontWeight:900, color:'#fff' }}>ZERA LAB</div><div style={{ fontSize: isMobile ? 11 : 13, color:'rgba(255,255,255,0.8)' }}>{doctor.nombre}</div></div>
         </div>
-        <button onClick={onLogout} style={{ padding:'8px 16px', borderRadius:'var(--radius-md)', background:'rgba(255,255,255,0.15)', border:'none', color:'#fff', cursor:'pointer', fontSize:13, fontWeight:600 }}>Salir</button>
+        <button onClick={onLogout} style={{ padding: isMobile ? '8px 12px' : '8px 16px', borderRadius:'var(--radius-md)', background:'rgba(255,255,255,0.15)', border:'none', color:'#fff', cursor:'pointer', fontSize: isMobile ? 12 : 13, fontWeight:600, minHeight: isMobile ? 44 : 'auto', alignSelf: isMobile ? 'stretch' : 'auto' }}>Salir</button>
       </div>
 
-      <div style={{ display:'flex', borderBottom:'1px solid var(--border-subtle)', background:'var(--bg-secondary)' }}>
+      <div style={{ display:'flex', borderBottom:'1px solid var(--border-subtle)', background:'var(--bg-secondary)', overflowX: 'auto' }}>
         {[['inicio','Inicio'],['ordenes','Mis órdenes'],['escaneo','Solicitar escaneo'],['pagos','Mis pagos']].map(([k,l]) => (
-          <button key={k} onClick={()=>setTab(k)} style={{ flex:1, padding:'14px', border:'none', borderBottom:tab===k?`3px solid var(--mod-doctores)`:'3px solid transparent', background:'transparent', color:tab===k?'var(--mod-doctores)':'var(--text-muted)', cursor:'pointer', fontSize:14, fontWeight:tab===k?700:400 }}>{l}</button>
+          <button key={k} onClick={()=>setTab(k)} style={{ flex:1, padding: isMobile ? '12px 8px' : '14px 12px', border:'none', borderBottom:tab===k?`3px solid var(--mod-doctores)`:'3px solid transparent', background:'transparent', color:tab===k?'var(--mod-doctores)':'var(--text-muted)', cursor:'pointer', fontSize: isMobile ? 12 : 14, fontWeight:tab===k?700:400, minHeight: 44, minWidth: isMobile ? 'auto' : '120px', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>{l}</button>
         ))}
       </div>
 
-      <div style={{ maxWidth:700, margin:'24px auto', padding:'0 16px' }}>
+      <div style={{ maxWidth:700, margin: isMobile ? '16px auto' : '24px auto', padding: isMobile ? '0 12px' : '0 16px' }}>
         {tab === 'inicio' && (
           <div>
-            <div style={{ background:`var(--mod-doctores)15`, borderRadius:'var(--radius-lg)', padding:24, marginBottom:20, borderLeft:`4px solid var(--mod-doctores)` }}>
-              <h2 style={{ fontSize:22, fontWeight:800, marginBottom:4 }}>Bienvenido, {doctor.nombre}</h2>
-              <p style={{ fontSize:14, color:'var(--text-secondary)' }}>Tienes {ordenes.length} casos activos y un saldo pendiente de ${saldoPendiente.toLocaleString()}</p>
+            <div style={{ background:`var(--mod-doctores)15`, borderRadius:'var(--radius-lg)', padding: isMobile ? 16 : 24, marginBottom: isMobile ? 16 : 20, borderLeft:`4px solid var(--mod-doctores)` }}>
+              <h2 style={{ fontSize: isMobile ? 18 : 22, fontWeight:800, marginBottom:4 }}>Bienvenido, {doctor.nombre}</h2>
+              <p style={{ fontSize: isMobile ? 12 : 14, color:'var(--text-secondary)' }}>Tienes {ordenes.length} casos activos y un saldo pendiente de ${saldoPendiente.toLocaleString()}</p>
             </div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-              <div style={{ background:'var(--bg-card)', borderRadius:'var(--radius-lg)', padding:20, borderLeft:'4px solid var(--mod-ordenes)' }}><div style={{ fontSize:28, fontWeight:900, color:'var(--mod-ordenes)' }}>{ordenes.length}</div><div style={{ fontSize:14, color:'var(--text-muted)' }}>Casos activos</div></div>
-              <div style={{ background:'var(--bg-card)', borderRadius:'var(--radius-lg)', padding:20, borderLeft:'4px solid var(--danger)' }}><div style={{ fontSize:28, fontWeight:900, color:'var(--danger)' }}>${saldoPendiente.toLocaleString()}</div><div style={{ fontSize:14, color:'var(--text-muted)' }}>Saldo pendiente</div></div>
+            <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 10 : 12 }}>
+              <div style={{ background:'var(--bg-card)', borderRadius:'var(--radius-lg)', padding: isMobile ? 16 : 20, borderLeft:'4px solid var(--mod-ordenes)' }}><div style={{ fontSize: isMobile ? 24 : 28, fontWeight:900, color:'var(--mod-ordenes)' }}>{ordenes.length}</div><div style={{ fontSize: isMobile ? 12 : 14, color:'var(--text-muted)' }}>Casos activos</div></div>
+              <div style={{ background:'var(--bg-card)', borderRadius:'var(--radius-lg)', padding: isMobile ? 16 : 20, borderLeft:'4px solid var(--danger)' }}><div style={{ fontSize: isMobile ? 24 : 28, fontWeight:900, color:'var(--danger)' }}>${saldoPendiente.toLocaleString()}</div><div style={{ fontSize: isMobile ? 12 : 14, color:'var(--text-muted)' }}>Saldo pendiente</div></div>
             </div>
           </div>
         )}
 
         {tab === 'ordenes' && (
           <div>
-            <h2 style={{ fontSize:20, fontWeight:800, marginBottom:16 }}>Mis órdenes</h2>
+            <h2 style={{ fontSize: isMobile ? 16 : 20, fontWeight:800, marginBottom: isMobile ? 12 : 16 }}>Mis órdenes</h2>
             {ordenes.map((o,i) => (
-              <div key={i} style={{ background:'var(--bg-card)', borderRadius:'var(--radius-lg)', padding:18, marginBottom:10, borderLeft:`4px solid ${o.estatus==='En proceso'?'var(--warning)':'var(--info)'}` }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
-                  <span style={{ fontSize:16, fontWeight:700 }}>{o.paciente}</span>
+              <div key={i} style={{ background:'var(--bg-card)', borderRadius:'var(--radius-lg)', padding: isMobile ? 14 : 18, marginBottom: isMobile ? 8 : 10, borderLeft:`4px solid ${o.estatus==='En proceso'?'var(--warning)':'var(--info)'}` }}>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6, flexWrap: 'wrap', gap: isMobile ? 8 : 0 }}>
+                  <span style={{ fontSize: isMobile ? 14 : 16, fontWeight:700 }}>{o.paciente}</span>
                   <Badge color={o.estatus==='En proceso'?'var(--warning)':'var(--info)'}>{o.estatus}</Badge>
                 </div>
-                <div style={{ fontSize:14, color:'var(--text-secondary)' }}>{o.trabajo}</div>
-                <div style={{ fontSize:13, color:'var(--text-muted)', marginTop:4 }}>Entrega estimada: {o.fecha}</div>
+                <div style={{ fontSize: isMobile ? 12 : 14, color:'var(--text-secondary)' }}>{o.trabajo}</div>
+                <div style={{ fontSize: isMobile ? 11 : 13, color:'var(--text-muted)', marginTop:4 }}>Entrega estimada: {o.fecha}</div>
               </div>
             ))}
           </div>
@@ -4245,20 +4704,20 @@ function DoctorPortal({ doctor, onLogout }) {
 
         {tab === 'escaneo' && (
           <div>
-            <h2 style={{ fontSize:20, fontWeight:800, marginBottom:16 }}>Solicitar escaneo</h2>
-            <div style={{ background:'var(--bg-card)', borderRadius:'var(--radius-lg)', padding:20, marginBottom:20, border:'1px solid var(--border-subtle)' }}>
+            <h2 style={{ fontSize: isMobile ? 16 : 20, fontWeight:800, marginBottom: isMobile ? 12 : 16 }}>Solicitar escaneo</h2>
+            <div style={{ background:'var(--bg-card)', borderRadius:'var(--radius-lg)', padding: isMobile ? 16 : 20, marginBottom: isMobile ? 16 : 20, border:'1px solid var(--border-subtle)' }}>
               <Field label="Nombre del paciente"><input value={scanForm.paciente} onChange={e=>setScanForm({...scanForm,paciente:e.target.value})} placeholder="Ej: Juan Pérez" /></Field>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+              <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 10 : 12 }}>
                 <Field label="Fecha del escaneo"><input type="date" value={scanForm.fecha} onChange={e=>setScanForm({...scanForm,fecha:e.target.value})} /></Field>
                 <Field label="Hora preferida"><input type="time" value={scanForm.hora} onChange={e=>setScanForm({...scanForm,hora:e.target.value})} /></Field>
               </div>
               <Field label="Notas adicionales"><textarea value={scanForm.notas} onChange={e=>setScanForm({...scanForm,notas:e.target.value})} rows={2} placeholder="Indicaciones especiales..." /></Field>
-              <button onClick={submitScan} style={{ width:'100%', padding:14, background:'var(--mod-doctores)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', cursor:'pointer', fontSize:15, fontWeight:700 }}>Enviar solicitud de escaneo</button>
+              <button onClick={submitScan} style={{ width:'100%', padding: isMobile ? 12 : 14, background:'var(--mod-doctores)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', cursor:'pointer', fontSize: isMobile ? 14 : 15, fontWeight:700, minHeight: 44 }}>Enviar solicitud de escaneo</button>
             </div>
-            <h3 style={{ fontSize:16, fontWeight:700, marginBottom:10 }}>Historial de solicitudes</h3>
+            <h3 style={{ fontSize: isMobile ? 14 : 16, fontWeight:700, marginBottom: isMobile ? 8 : 10 }}>Historial de solicitudes</h3>
             {scanHistory.map(s => (
-              <div key={s.id} style={{ background:'var(--bg-card)', borderRadius:'var(--radius-md)', padding:14, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', border:'1px solid var(--border-subtle)' }}>
-                <div><div style={{ fontSize:14, fontWeight:600 }}>{s.paciente}</div><div style={{ fontSize:13, color:'var(--text-muted)' }}>{s.fecha} a las {s.hora || 'por confirmar'}</div></div>
+              <div key={s.id} style={{ background:'var(--bg-card)', borderRadius:'var(--radius-md)', padding: isMobile ? 12 : 14, marginBottom: isMobile ? 6 : 8, display:'flex', justifyContent:'space-between', alignItems: isMobile ? 'flex-start' : 'center', border:'1px solid var(--border-subtle)', gap: isMobile ? 8 : 0, flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
+                <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: isMobile ? 13 : 14, fontWeight:600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.paciente}</div><div style={{ fontSize: isMobile ? 11 : 13, color:'var(--text-muted)' }}>{s.fecha} a las {s.hora || 'por confirmar'}</div></div>
                 <Badge color={s.estado==='confirmado'?'var(--success)':'var(--warning)'}>{s.estado==='confirmado'?'✅ Confirmado':'⏳ Pendiente'}</Badge>
               </div>
             ))}
@@ -4267,14 +4726,14 @@ function DoctorPortal({ doctor, onLogout }) {
 
         {tab === 'pagos' && (
           <div>
-            <h2 style={{ fontSize:20, fontWeight:800, marginBottom:4 }}>Mis pagos</h2>
-            <p style={{ fontSize:14, color:'var(--text-muted)', marginBottom:16 }}>Saldo pendiente total: <strong style={{ color:'var(--danger)', fontSize:18 }}>${saldoPendiente.toLocaleString()}</strong></p>
+            <h2 style={{ fontSize: isMobile ? 16 : 20, fontWeight:800, marginBottom:4 }}>Mis pagos</h2>
+            <p style={{ fontSize: isMobile ? 12 : 14, color:'var(--text-muted)', marginBottom: isMobile ? 12 : 16 }}>Saldo pendiente total: <strong style={{ color:'var(--danger)', fontSize: isMobile ? 16 : 18 }}>${saldoPendiente.toLocaleString()}</strong></p>
             {pagos.map((p,i) => (
-              <div key={i} style={{ background:'var(--bg-card)', borderRadius:'var(--radius-md)', padding:16, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', border:'1px solid var(--border-subtle)', borderLeft:`4px solid ${p.pagado>=p.monto?'var(--success)':'var(--danger)'}` }}>
-                <div><div style={{ fontSize:14, fontWeight:600 }}>{p.paciente}</div><div style={{ fontSize:13, color:'var(--text-muted)' }}>{p.trabajo}</div></div>
-                <div style={{ textAlign:'right' }}>
-                  <div style={{ fontSize:18, fontWeight:800, color:p.pagado>=p.monto?'var(--success)':'var(--danger)' }}>${(p.monto-p.pagado).toLocaleString()}</div>
-                  <div style={{ fontSize:12, color:'var(--text-muted)' }}>{p.pagado>=p.monto?'Pagado':'Pendiente'}</div>
+              <div key={i} style={{ background:'var(--bg-card)', borderRadius:'var(--radius-md)', padding: isMobile ? 12 : 16, marginBottom: isMobile ? 6 : 8, display:'flex', justifyContent:'space-between', alignItems: isMobile ? 'flex-start' : 'center', border:'1px solid var(--border-subtle)', borderLeft:`4px solid ${p.pagado>=p.monto?'var(--success)':'var(--danger)'}`, gap: isMobile ? 8 : 0, flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
+                <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: isMobile ? 13 : 14, fontWeight:600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.paciente}</div><div style={{ fontSize: isMobile ? 11 : 13, color:'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.trabajo}</div></div>
+                <div style={{ textAlign:'right', whiteSpace: 'nowrap' }}>
+                  <div style={{ fontSize: isMobile ? 16 : 18, fontWeight:800, color:p.pagado>=p.monto?'var(--success)':'var(--danger)' }}>${(p.monto-p.pagado).toLocaleString()}</div>
+                  <div style={{ fontSize: isMobile ? 10 : 12, color:'var(--text-muted)' }}>{p.pagado>=p.monto?'Pagado':'Pendiente'}</div>
                 </div>
               </div>
             ))}
@@ -4294,6 +4753,18 @@ function App() {
   const [activeModule, setActiveModule] = useState('dashboard');
   const [collapsed, setCollapsed] = useState(false);
   const [currentDoctor, setCurrentDoctor] = useState(null); // Para el portal de doctores (login interno)
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  // Detectar cambios de tamaño de pantalla
+  useEffect(() => {
+    const handleResize = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      if (mobile) setCollapsed(true); // Colapsar sidebar en móvil
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const handleLogin = (user) => setSession({ type: 'team', user });
   const handleDoctorLogin = (doctor) => setSession({ type: 'doctor', doctor });
@@ -4328,12 +4799,15 @@ function App() {
     }
   };
 
+  const mainPadding = isMobile ? 12 : 28;
+  const mainPaddingSmall = window.innerWidth < 480 ? 8 : mainPadding;
+
   return (
-    <div style={{ display:'flex', height:'100vh' }}>
+    <div style={{ display:'flex', height:'100vh', width:'100%' }}>
       <Sidebar activeModule={activeModule} onSelect={setActiveModule} collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} currentUser={currentUser} />
-      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', width:'100%' }}>
         <Header module={mod} currentUser={currentUser} onLogout={handleLogout} />
-        <main style={{ flex:1, overflow:'auto', padding:28 }}>{renderContent()}</main>
+        <main style={{ flex:1, overflow:'auto', padding: window.innerWidth < 480 ? mainPaddingSmall : mainPadding, paddingRight: window.innerWidth < 480 ? 8 : 28 }}>{renderContent()}</main>
       </div>
     </div>
   );
