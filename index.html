@@ -2297,6 +2297,14 @@ function ProduccionIntegradaModule({ onNavigate }) {
     const file = e.target.files[0];
     if (!file) return;
 
+    // FIX: Detectar tipo MIME correcto del archivo (HEIC, PNG, JPEG, etc)
+    let mediaType = 'image/jpeg'; // default
+    if (file.type === 'image/png') mediaType = 'image/png';
+    else if (file.type === 'image/heic') mediaType = 'image/heic';
+    else if (file.type === 'image/heif') mediaType = 'image/heif';
+    else if (file.type === 'image/webp') mediaType = 'image/webp';
+    console.log('📸 Tipo de archivo detectado:', file.type, '→', mediaType);
+
     setProcesandoOCR(true);
     const reader = new FileReader();
     reader.onload = async (event) => {
@@ -2306,6 +2314,7 @@ function ProduccionIntegradaModule({ onNavigate }) {
       try {
         // Extraer base64 sin prefijo
         const base64Data = base64.includes(',') ? base64.split(',')[1] : base64;
+        console.log('🔄 Base64 extraído, longitud:', base64Data.length);
 
         // Usar Claude API con Vision para procesar la orden
         const response = await fetch(ANTHROPIC_API_URL, {
@@ -2317,30 +2326,29 @@ function ProduccionIntegradaModule({ onNavigate }) {
           },
           body: JSON.stringify({
             model: 'claude-3-5-sonnet-20241022',
-            max_tokens: 800,
+            max_tokens: 1000,
             messages: [{
               role: 'user',
               content: [
                 {
                   type: 'image',
-                  source: { type: 'base64', media_type: 'image/jpeg', data: base64Data }
+                  source: { type: 'base64', media_type: mediaType, data: base64Data }
                 },
                 {
                   type: 'text',
-                  text: `IMPORTANTE: Eres un asistente especializado en laboratorios dentales.
+                  text: `Eres un experto analizando órdenes de trabajo de laboratorio dental.
 
-Lee esta imagen de una orden de trabajo dental. Extrae los siguientes campos:
+ANALIZA esta imagen Y EXTRAE EXACTAMENTE estos 5 campos en JSON:
+- folio: Código/número identificador (ej: ZL-0001, L-2024-001)
+- doctor: Nombre del dentista/doctor
+- paciente: Nombre completo del paciente
+- trabajo: Tipo de prótesis/trabajo (ej: Corona Zirconia, Puente, Inlay, etc)
+- dientes: Lista de números de dientes (ej: "11, 12, 13" o "1.1, 1.2, 2.1")
 
-1. FOLIO: Número de identificación (ej: ZL-0001)
-2. DOCTOR: Nombre del dentista (ej: Dr. García)
-3. PACIENTE: Nombre del paciente (ej: Juan Pérez)
-4. TRABAJO: Tipo de prótesis (ej: Corona Zirconia)
-5. DIENTES: Números de dientes (ej: 11, 12)
+Si un campo NO está visible o no lo encuentras, usa: "No especificado"
 
-Si no encuentras un campo, escribe "No especificado".
-
-Responde EXACTAMENTE en este formato JSON, sin texto adicional:
-{"folio":"valor","doctor":"valor","paciente":"valor","trabajo":"valor","dientes":"valor"}`
+RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
+{"folio":"","doctor":"","paciente":"","trabajo":"","dientes":""}`
                 }
               ]
             }]
@@ -2349,43 +2357,58 @@ Responde EXACTAMENTE en este formato JSON, sin texto adicional:
 
         if (!response.ok) {
           const errorData = await response.json();
-          console.error('Error de API:', errorData);
-          throw new Error(`API Error: ${errorData.error?.message || 'Unknown error'}`);
+          console.error('❌ Error de API HTTP:', response.status, errorData);
+          throw new Error(`HTTP ${response.status}: ${errorData.error?.message || errorData.message || 'Error desconocido'}`);
         }
 
         const data = await response.json();
-        console.log('Respuesta de Claude:', data);
+        console.log('✅ Respuesta de Claude:', data);
 
         const contenido = data.content?.[0]?.text || '';
         if (!contenido) {
-          throw new Error('No content returned from Claude');
+          console.error('❌ Claude no retornó contenido');
+          throw new Error('Claude no retornó contenido. Intenta nuevamente.');
         }
 
-        // Mejor parsing del JSON
+        console.log('📄 Contenido de respuesta:', contenido);
+
+        // Parsing mejorado del JSON
         let datosExtraidos = {};
         try {
-          // Buscar JSON en la respuesta
-          const jsonMatch = contenido.match(/\{[^{}]*"folio"[^{}]*\}/s) ||
-                           contenido.match(/\{[^{}]*"doctor"[^{}]*\}/s) ||
-                           contenido.match(/\{[\s\S]*?\}/);
+          // Buscar JSON - intentar parse directo primero, luego regex
+          let jsonStr = contenido.trim();
 
-          if (jsonMatch) {
-            datosExtraidos = JSON.parse(jsonMatch[0]);
-            console.log('Datos extraídos:', datosExtraidos);
-          } else {
-            console.warn('No se encontró JSON válido en la respuesta:', contenido);
-            throw new Error('Respuesta no contiene JSON válido');
+          // Si empieza/termina con markdown code block, remover
+          jsonStr = jsonStr.replace(/^```json\s*/i, '').replace(/```\s*$/, '');
+          jsonStr = jsonStr.replace(/^```\s*/i, '').replace(/```\s*$/, '');
+
+          // Intentar JSON parse directo
+          try {
+            datosExtraidos = JSON.parse(jsonStr);
+            console.log('✅ JSON parseado directamente:', datosExtraidos);
+          } catch (e) {
+            // Si falla, usar regex para buscar { ... }
+            const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              datosExtraidos = JSON.parse(jsonMatch[0]);
+              console.log('✅ JSON parseado con regex:', datosExtraidos);
+            } else {
+              throw new Error('No se encontró JSON en la respuesta');
+            }
           }
         } catch (parseErr) {
-          console.error('Error parseando JSON:', parseErr, 'Contenido:', contenido);
-          throw new Error(`JSON parsing error: ${parseErr.message}`);
+          console.error('❌ Error parseando JSON:', parseErr.message);
+          console.error('Contenido recibido:', contenido);
+          throw new Error(`Error parseando respuesta: ${parseErr.message}`);
         }
 
-        // Validar que al menos tenemos algunos datos
-        const tieneDatos = datosExtraidos.folio || datosExtraidos.doctor || datosExtraidos.paciente || datosExtraidos.trabajo;
+        // Validar que tenemos al menos ALGO
+        const tieneDatos = Object.values(datosExtraidos).some(v => v && v !== 'No especificado');
         if (!tieneDatos) {
-          throw new Error('No se extrajeron datos de la imagen');
+          throw new Error('Claude no pudo extraer datos de la imagen. Intenta con una foto más clara.');
         }
+
+        console.log('🦷 Dientes detectados:', datosExtraidos.dientes);
 
         setFormData(prev => ({
           ...prev,
@@ -2396,11 +2419,11 @@ Responde EXACTAMENTE en este formato JSON, sin texto adicional:
           dientes: datosExtraidos.dientes || prev.dientes
         }));
 
-        alert('✅ Foto procesada con IA. Campos rellenados automáticamente.\n\nVerifica los datos antes de guardar.');
+        alert('✅ Foto procesada correctamente con IA.\n\n📋 Verifica los datos:\n• Folio: ' + (datosExtraidos.folio || '?') + '\n• Doctor: ' + (datosExtraidos.doctor || '?') + '\n• Paciente: ' + (datosExtraidos.paciente || '?') + '\n• Trabajo: ' + (datosExtraidos.trabajo || '?'));
       } catch (err) {
-        console.error('Error procesando foto:', err);
-        const mensajeError = err.message || 'Error desconocido';
-        alert(`⚠️ Error procesando foto:\n\n${mensajeError}\n\nIntenta:\n• Con una imagen más clara de la orden\n• Asegúrate que sea legible\n• O llena los campos manualmente`);
+        console.error('❌ Error CRÍTICO en handleFileUpload:', err);
+        const mensajeError = err.message || 'Error desconocido del sistema';
+        alert(`⚠️ Error procesando foto:\n\n${mensajeError}\n\n💡 Opciones:\n• Usa "✍️ Modo Manual" para ingresar datos sin foto\n• Intenta con imagen más clara\n• Verifica conexión a internet`);
       } finally {
         setProcesandoOCR(false);
       }
@@ -2982,16 +3005,18 @@ function CheckinModule({ currentUser, onNavigate }) {
     localStorage.setItem(`checkout_${currentUser?.name}_${ahora.toLocaleDateString('es-MX')}`, horaCheckout);
 
     // Calcular horas trabajadas
+    let horasTrabajadas = 0;
     if (checkinTime) {
       const [hci, mci] = checkinTime.split(':').map(Number);
       const [hco, mco] = horaCheckout.split(':').map(Number);
       const minutosCheckin = hci * 60 + mci;
       const minutosCheckout = hco * 60 + mco;
       const diferencia = Math.max(0, minutosCheckout - minutosCheckin) / 60;
-      setHorasHoy(diferencia.toFixed(1));
+      horasTrabajadas = parseFloat(diferencia.toFixed(1));
+      setHorasHoy(horasTrabajadas);
     }
 
-    alert(`✅ Checkout registrado a las ${horaCheckout}\n⏰ Horas trabajadas hoy: ${horasHoy} horas`);
+    alert(`✅ Checkout registrado a las ${horaCheckout}\n⏰ Horas trabajadas hoy: ${horasTrabajadas} horas`);
   };
 
   return (
@@ -5078,7 +5103,7 @@ function Sidebar({ activeModule, onSelect, collapsed, onToggle, currentUser }) {
 // ============================================================
 // HEADER
 // ============================================================
-function Header({ module, currentUser, onLogout }) {
+function Header({ module, currentUser, onLogout, onSidebarToggle, collapsed, isMobileView }) {
   const isMobile = window.innerWidth < 768;
   const isSmallMobile = window.innerWidth < 480;
 
@@ -5094,6 +5119,25 @@ function Header({ module, currentUser, onLogout }) {
       flexShrink:0,
       gap: 12
     }}>
+      {/* HAMBURGER BUTTON (Mobile Only) */}
+      {isMobile && (
+        <button onClick={onSidebarToggle} style={{
+          padding: 0,
+          border: 'none',
+          background: 'transparent',
+          color: 'var(--text-secondary)',
+          cursor: 'pointer',
+          fontSize: 20,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minWidth: 44,
+          minHeight: 44
+        }}>
+          {collapsed ? '☰' : '✕'}
+        </button>
+      )}
+
       <div style={{ minWidth: 0, flex: 1 }}>
         <h1 style={{
           fontSize: isSmallMobile ? 14 : isMobile ? 16 : 18,
@@ -5320,7 +5364,7 @@ function App() {
     <div style={{ display:'flex', height:'100vh', width:'100%' }}>
       <Sidebar activeModule={activeModule} onSelect={setActiveModule} collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} currentUser={currentUser} />
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', width:'100%' }}>
-        <Header module={mod} currentUser={currentUser} onLogout={handleLogout} />
+        <Header module={mod} currentUser={currentUser} onLogout={handleLogout} onSidebarToggle={() => setCollapsed(!collapsed)} collapsed={collapsed} isMobileView={isMobile} />
         <main style={{ flex:1, overflow:'auto', padding: window.innerWidth < 480 ? mainPaddingSmall : mainPadding, paddingRight: window.innerWidth < 480 ? 8 : 28 }}>{renderContent()}</main>
       </div>
     </div>
