@@ -8,7 +8,7 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.38.2/+esm"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.38.2/dist/main.umd.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -1464,6 +1464,31 @@ function ProduccionIntegradaModule() {
   const [formData, setFormData] = React.useState({ folio: '', doctor: '', paciente: '', trabajo: '', dientes: '', unidades: 1, foto_orden: null, foto_base64: null });
   const [procesandoOCR, setProcesandoOCR] = React.useState(false);
 
+  // Assignment dialog state
+  const [assignmentDialog, setAssignmentDialog] = React.useState({ visible: false, orden: null, nuevoEstado: null, asignado: null });
+  const [editingAssignment, setEditingAssignment] = React.useState(false);
+  const TEAM_MEMBERS = ['Aram', 'Fidel', 'Rafael', 'Kevin', 'Montserrat', 'Papa'];
+
+  // Function to get default assignment based on destination phase
+  const getDefaultAssignment = (nuevoEstado) => {
+    if (nuevoEstado === 'escaneo-diseño' || nuevoEstado === 'trabajo-fisico') return 'Aram';
+    if (nuevoEstado === 'porcelana') return 'Papa';
+    return 'Fidel';
+  };
+
+  const handleUpdateAssignment = (newAsignado) => {
+    const nuevasOrdenes = ordenes.map(o => {
+      if (o.id === selectedOrder.id) {
+        setSelectedOrder({ ...selectedOrder, asignado_a: newAsignado });
+        return { ...o, asignado_a: newAsignado };
+      }
+      return o;
+    });
+    setOrdenes(nuevasOrdenes);
+    localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+    setEditingAssignment(false);
+  };
+
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -1527,18 +1552,26 @@ function ProduccionIntegradaModule() {
     const orderId = parseInt(e.dataTransfer.getData('orderId'));
     const orden = ordenes.find(o => o.id === orderId);
     if (orden && orden.estado !== nuevoEstado) {
-      const ahora = new Date();
-      const fecha = ahora.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      const usuarioActual = localStorage.getItem('usuarioActual') || 'Sistema';
-      const nuevasOrdenes = ordenes.map(o => {
-        if (o.id === orderId) {
-          return { ...o, estado: nuevoEstado, asignado_a: usuarioActual, historial: [...o.historial, { fase: nuevoEstado, fecha: fecha, usuario: usuarioActual, notas: `Movido a ${PRODUCTION_PHASES.find(p => p.id === nuevoEstado)?.label}` }] };
-        }
-        return o;
-      });
-      setOrdenes(nuevasOrdenes);
-      localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+      // Show assignment dialog
+      const defaultAsignado = getDefaultAssignment(nuevoEstado);
+      setAssignmentDialog({ visible: true, orden: orden, nuevoEstado: nuevoEstado, asignado: defaultAsignado });
     }
+  };
+
+  const confirmarAsignacion = () => {
+    if (!assignmentDialog.orden || !assignmentDialog.nuevoEstado) return;
+
+    const ahora = new Date();
+    const fecha = ahora.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const nuevasOrdenes = ordenes.map(o => {
+      if (o.id === assignmentDialog.orden.id) {
+        return { ...o, estado: assignmentDialog.nuevoEstado, asignado_a: assignmentDialog.asignado, historial: [...o.historial, { fase: assignmentDialog.nuevoEstado, fecha: fecha, usuario: assignmentDialog.asignado, notas: `Movido a ${PRODUCTION_PHASES.find(p => p.id === assignmentDialog.nuevoEstado)?.label}` }] };
+      }
+      return o;
+    });
+    setOrdenes(nuevasOrdenes);
+    localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+    setAssignmentDialog({ visible: false, orden: null, nuevoEstado: null, asignado: null });
   };
 
   const calcularCostoOrden = (trabajo, unidades) => {
@@ -1617,7 +1650,7 @@ function ProduccionIntegradaModule() {
             <input type="text" placeholder="Dientes" value={formData.dientes} onChange={(e) => setFormData({...formData, dientes: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
             <select value={formData.color} onChange={(e) => setFormData({...formData, color: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }}>
               <option value="">Color (Sombra)</option>
-              {SHADE_COLORS.map(shade => <option key={shade.code} value={shade.code}>{shade.label}</option>)}
+              {SHADE_COLORS.map(shade => <option key={shade.code} value={shade.code}>{shade.code}</option>)}
             </select>
             <input type="number" placeholder="Unidades" value={formData.unidades} onChange={(e) => setFormData({...formData, unidades: parseInt(e.target.value)})} min="1" style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
           </div>
@@ -1666,9 +1699,72 @@ function ProduccionIntegradaModule() {
                   <div><span style={{ color: 'var(--text-secondary)' }}>👨‍⚕️ Doctor:</span> <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{selectedOrder.doctor}</span></div>
                   <div><span style={{ color: 'var(--text-secondary)' }}>👤 Paciente:</span> <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{selectedOrder.paciente}</span></div>
                   <div><span style={{ color: 'var(--text-secondary)' }}>🦷 Trabajo:</span> <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{selectedOrder.trabajo}</span></div>
-                  <div style={{ background: 'var(--accent-blue-soft)', padding: '10px', borderRadius: 'var(--radius-md)', borderLeft: '3px solid var(--accent-blue)' }}><span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>👨‍🔧 TRABAJA:</span><div style={{ color: 'var(--accent-blue)', fontWeight: 700, marginTop: '4px', fontSize: '14px' }}>{selectedOrder.asignado_a || '⚠️ Sin asignar'}</div></div>
+                  <div style={{ background: 'var(--accent-blue-soft)', padding: '10px', borderRadius: 'var(--radius-md)', borderLeft: '3px solid var(--accent-blue)' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>👨‍🔧 TRABAJA:</span>
+                    {!editingAssignment ? (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                        <div style={{ color: 'var(--accent-blue)', fontWeight: 700, fontSize: '14px' }}>{selectedOrder.asignado_a || '⚠️ Sin asignar'}</div>
+                        <button onClick={() => setEditingAssignment(true)} style={{ background: 'rgba(91, 141, 239, 0.3)', border: 'none', color: 'var(--accent-blue)', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '11px', fontWeight: 600 }}>✏️ Editar</button>
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: '8px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                        {TEAM_MEMBERS.map(member => (
+                          <button
+                            key={member}
+                            onClick={() => handleUpdateAssignment(member)}
+                            style={{
+                              padding: '8px 12px',
+                              background: selectedOrder.asignado_a === member ? 'var(--accent-blue)' : 'rgba(91, 141, 239, 0.2)',
+                              color: selectedOrder.asignado_a === member ? '#fff' : 'var(--accent-blue)',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '11px',
+                              fontWeight: 600,
+                              transition: 'all 0.2s'
+                            }}
+                          >
+                            {member}
+                          </button>
+                        ))}
+                        <button
+                          onClick={() => setEditingAssignment(false)}
+                          style={{ gridColumn: '1 / -1', padding: '8px 12px', background: 'transparent', color: 'var(--accent-blue)', border: '1px solid var(--accent-blue)', borderRadius: '4px', cursor: 'pointer', fontSize: '11px', fontWeight: 600 }}
+                        >
+                          ✕ Cerrar
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
+
+              {selectedOrder.estado === 'calidad' && (
+                <div style={{ marginBottom: '24px', padding: '16px', background: 'rgba(52, 211, 153, 0.1)', borderRadius: 'var(--radius-md)', border: '2px solid rgba(52, 211, 153, 0.3)' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#34D399', marginBottom: '12px' }}>✅ CONTROL DE CALIDAD</h3>
+                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>Esta orden está lista para ser completada. Selecciona la acción:</p>
+                  <button
+                    onClick={() => {
+                      const ahora = new Date();
+                      const fecha = ahora.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                      const nuevasOrdenes = ordenes.map(o => {
+                        if (o.id === selectedOrder.id) {
+                          return { ...o, estado: 'terminado', historial: [...o.historial, { fase: 'terminado', fecha: fecha, usuario: selectedOrder.asignado_a, notas: 'Orden completada y lista para entrega' }] };
+                        }
+                        return o;
+                      });
+                      setOrdenes(nuevasOrdenes);
+                      localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+                      alert('✅ Orden marcada como terminada. Se puede proceder a mensajería y finanzas.');
+                      closeDrawer();
+                    }}
+                    style={{ width: '100%', padding: '12px 16px', background: '#34D399', color: '#000', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+                  >
+                    📧 Enviar a Terminado (Mensajería/Finanzas)
+                  </button>
+                </div>
+              )}
+
               {selectedOrder.fotos_evidencia && selectedOrder.fotos_evidencia.length > 0 && (
                 <div style={{ marginBottom: '24px' }}>
                   <h3 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '12px' }}>📸 EVIDENCIA FOTOGRÁFICA</h3>
@@ -1699,6 +1795,60 @@ function ProduccionIntegradaModule() {
                   ))}
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Assignment Dialog */}
+      {assignmentDialog.visible && assignmentDialog.orden && (
+        <div style={{ position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 }}>
+          <div style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', padding: '32px', maxWidth: '450px', width: '90%', border: '2px solid var(--mod-produccion)' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>👨‍🔧 Asignar Orden</h2>
+            <p style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '24px' }}>¿Quién será responsable de mover esta orden a <strong>{PRODUCTION_PHASES.find(p => p.id === assignmentDialog.nuevoEstado)?.label}</strong>?</p>
+
+            <div style={{ marginBottom: '20px', background: 'var(--bg-card)', padding: '16px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>Orden: {assignmentDialog.orden.folio}</div>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{assignmentDialog.orden.paciente} — {assignmentDialog.orden.trabajo}</div>
+            </div>
+
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '12px' }}>Persona asignada:</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                {TEAM_MEMBERS.map(member => (
+                  <button
+                    key={member}
+                    onClick={() => setAssignmentDialog({ ...assignmentDialog, asignado: member })}
+                    style={{
+                      padding: '12px 16px',
+                      background: assignmentDialog.asignado === member ? 'var(--mod-produccion)' : 'var(--bg-card)',
+                      color: assignmentDialog.asignado === member ? '#fff' : 'var(--text-primary)',
+                      border: assignmentDialog.asignado === member ? '2px solid var(--mod-produccion)' : '1px solid var(--border-subtle)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: 'pointer',
+                      fontWeight: assignmentDialog.asignado === member ? 700 : 500,
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    {member === 'Papa' ? '👨‍👦 ' : ''}{member}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <button
+                onClick={() => setAssignmentDialog({ visible: false, orden: null, nuevoEstado: null, asignado: null })}
+                style={{ flex: 1, padding: '12px 16px', background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600 }}
+              >
+                ✕ Cancelar
+              </button>
+              <button
+                onClick={confirmarAsignacion}
+                style={{ flex: 1, padding: '12px 16px', background: 'var(--mod-produccion)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600 }}
+              >
+                ✅ Confirmar
+              </button>
             </div>
           </div>
         </div>
