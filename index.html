@@ -8,6 +8,7 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.38.2/+esm"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -135,6 +136,155 @@ select option { background: var(--bg-card); }
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 // ============================================================
+// SUPABASE INTEGRATION
+// ============================================================
+const SUPABASE_URL = 'https://amsfcyosfusysywkwbah.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFtc2ZjeW9zZnVzeXN5d2tid2FoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTIwNzg5NTcsImV4cCI6MTc0MzYxNDk1N30.0R5r2_6jlJjQ_L0Zz_Zz3P_4Y5Q_8Z9X_0A_1B_2C_3D';
+
+let supabaseClient = null;
+
+async function initSupabase() {
+  if (supabaseClient) return supabaseClient;
+  const { createClient } = window.supabase;
+  supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  return supabaseClient;
+}
+
+const db = {
+  async getProduccionOrdenes() {
+    try {
+      const client = await initSupabase();
+      const { data, error } = await client.from('produccion_ordenes').select('*').order('created_at', { ascending: false });
+      if (error) {
+        console.log('Using localStorage fallback for produccionOrdenes');
+        return JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
+      }
+      return data || [];
+    } catch (e) {
+      console.log('Using localStorage fallback for produccionOrdenes:', e.message);
+      return JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
+    }
+  },
+
+  async addProduccionOrden(orden) {
+    try {
+      localStorage.setItem('produccionOrdenes', JSON.stringify([orden, ...JSON.parse(localStorage.getItem('produccionOrdenes') || '[]')]));
+      const client = await initSupabase();
+      const { data, error } = await client.from('produccion_ordenes').insert([{
+        folio: orden.folio,
+        doctor: orden.doctor,
+        paciente: orden.paciente || '',
+        tipo_trabajo: orden.tipo || '',
+        color: orden.color || null,
+        unidades: orden.unidades || 1,
+        hora_llegada: orden.hora || null,
+        fecha_entrega: orden.fecha || null,
+        garantia: orden.garantia || false,
+        lo_hace_fidel: orden.haceLoFidel || false,
+        escaneo: orden.escaneo || false,
+        estado: orden.estado || 'recepcion'
+      }]).select();
+      return error ? orden : (data?.[0] || orden);
+    } catch (e) {
+      console.log('Stored in localStorage only:', e.message);
+      return orden;
+    }
+  },
+
+  async getCostosOrdenes() {
+    try {
+      const client = await initSupabase();
+      const { data, error } = await client.from('costos_ordenes').select('*').order('created_at', { ascending: false });
+      if (error) {
+        console.log('Using localStorage fallback for costosOrdenes');
+        return JSON.parse(localStorage.getItem('costosOrdenes') || '[]');
+      }
+      return data || [];
+    } catch (e) {
+      console.log('Using localStorage fallback for costosOrdenes:', e.message);
+      return JSON.parse(localStorage.getItem('costosOrdenes') || '[]');
+    }
+  },
+
+  async addCostoOrden(costo) {
+    try {
+      localStorage.setItem('costosOrdenes', JSON.stringify([costo, ...JSON.parse(localStorage.getItem('costosOrdenes') || '[]')]));
+      const client = await initSupabase();
+      const { data, error } = await client.from('costos_ordenes').insert([costo]).select();
+      return error ? costo : (data?.[0] || costo);
+    } catch (e) {
+      console.log('Stored in localStorage only:', e.message);
+      return costo;
+    }
+  },
+
+  async getComisionesFidel() {
+    try {
+      const client = await initSupabase();
+      const { data, error } = await client.from('comisiones_fidel').select('*').order('created_at', { ascending: false });
+      if (error) {
+        console.log('Using localStorage fallback for comisionesFidel');
+        return JSON.parse(localStorage.getItem('comisionesFidel') || '[]');
+      }
+      return data || [];
+    } catch (e) {
+      console.log('Using localStorage fallback for comisionesFidel:', e.message);
+      return JSON.parse(localStorage.getItem('comisionesFidel') || '[]');
+    }
+  },
+
+  async addComisionFidel(comision) {
+    try {
+      localStorage.setItem('comisionesFidel', JSON.stringify([comision, ...JSON.parse(localStorage.getItem('comisionesFidel') || '[]')]));
+      const client = await initSupabase();
+      const { data, error } = await client.from('comisiones_fidel').insert([comision]).select();
+      return error ? comision : (data?.[0] || comision);
+    } catch (e) {
+      console.log('Stored in localStorage only:', e.message);
+      return comision;
+    }
+  },
+
+  async getGastosEscaneo() {
+    try {
+      const client = await initSupabase();
+      const { data, error } = await client.from('gastos_escaneo').select('*').order('created_at', { ascending: false });
+      if (error) {
+        console.log('Using localStorage fallback for gastosEscaneo');
+        return JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
+      }
+      return data || [];
+    } catch (e) {
+      console.log('Using localStorage fallback for gastosEscaneo:', e.message);
+      return JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
+    }
+  },
+
+  async addGastoEscaneo(gasto) {
+    try {
+      localStorage.setItem('gastosEscaneo', JSON.stringify([gasto, ...JSON.parse(localStorage.getItem('gastosEscaneo') || '[]')]));
+      const client = await initSupabase();
+      const { data, error } = await client.from('gastos_escaneo').insert([gasto]).select();
+      return error ? gasto : (data?.[0] || gasto);
+    } catch (e) {
+      console.log('Stored in localStorage only:', e.message);
+      return gasto;
+    }
+  }
+};
+
+// Initialize Supabase on app load
+(async () => {
+  try {
+    await initSupabase();
+    console.log('✅ Supabase initialized successfully');
+  } catch (e) {
+    console.log('⚠️ Supabase initialization warning:', e.message);
+    console.log('The app will use localStorage as fallback');
+  }
+})();
+
+// ============================================================
 // DATOS
 // ============================================================
 const MODULES = [
@@ -215,6 +365,38 @@ const ORIGIN_OPTIONS = [
   { id: 'fisica', label: 'Doctor envió impresión física' },
   { id: 'stl-escaneado', label: 'Doctor envió archivo escaneado' },
   { id: 'archivo-stl', label: 'Archivo STL digital' },
+];
+
+const PROTESIS_TIPOS = [
+  { id: 'corona', label: '👑 Corona' },
+  { id: 'puente', label: '🌉 Puente' },
+  { id: 'carilla', label: '💎 Carilla' },
+  { id: 'inlay', label: '🔹 Inlay/Onlay' },
+  { id: 'implante', label: '🔩 Corona sobre Implante' },
+  { id: 'removible', label: '🦷 Prótesis Removible' },
+  { id: 'ortodoncia', label: '↔️ Ortodoncia' },
+  { id: 'blanqueamiento', label: '✨ Blanqueamiento' },
+  { id: 'otro', label: '❓ Otro' },
+];
+
+const SHADE_COLORS = [
+  // Escala VITA Classical
+  { code: 'A1', label: 'A1 - Marrón claro', hex: '#D4A574' },
+  { code: 'A2', label: 'A2 - Marrón medio', hex: '#D89968' },
+  { code: 'A3', label: 'A3 - Marrón oscuro', hex: '#C87450' },
+  { code: 'A3.5', label: 'A3.5 - Marrón muy oscuro', hex: '#B85C38' },
+  { code: 'A4', label: 'A4 - Marrón rojo oscuro', hex: '#9E4A2A' },
+  { code: 'B1', label: 'B1 - Amarillo claro', hex: '#E8D4C4' },
+  { code: 'B2', label: 'B2 - Amarillo', hex: '#D9C9B8' },
+  { code: 'B3', label: 'B3 - Amarillo marrón', hex: '#C9B4A0' },
+  { code: 'B4', label: 'B4 - Amarillo marrón oscuro', hex: '#A89080' },
+  { code: 'C1', label: 'C1 - Gris claro', hex: '#E2D4C8' },
+  { code: 'C2', label: 'C2 - Gris', hex: '#D4C4BC' },
+  { code: 'C3', label: 'C3 - Gris oscuro', hex: '#BCB0A4' },
+  { code: 'C4', label: 'C4 - Gris muy oscuro', hex: '#9C9090' },
+  { code: 'D2', label: 'D2 - Rosa gris', hex: '#D4B4A8' },
+  { code: 'D3', label: 'D3 - Rosa gris oscuro', hex: '#BC9890' },
+  { code: 'D4', label: 'D4 - Rosa rojo oscuro', hex: '#A47C74' },
 ];
 
 const UPPER_RIGHT = [18,17,16,15,14,13,12,11];
@@ -871,7 +1053,7 @@ function OrdenesModule() {
   const [aiResult, setAiResult] = useState(null);
   const [uploadedOrders, setUploadedOrders] = useState([]);
   const [showManual, setShowManual] = useState(false);
-  const [manualData, setManualData] = useState({ doctor:'', paciente:'', trabajo:'', color:'', unidades:1, horaLlegada:'', fechaEntrega:'', esGarantia:false, escaneo:false });
+  const [manualData, setManualData] = useState({ doctor:'', paciente:'', trabajo:'', color:'', unidades:1, horaLlegada:'', fechaEntrega:'', esGarantia:false, haceLoFidel:false, escaneo:false });
   const fileRef = useRef(null);
 
   const handleOrderUpload = (e) => {
@@ -906,6 +1088,23 @@ function OrdenesModule() {
     };
     setUploadedOrders([ordenConMetadata, ...uploadedOrders]);
 
+    // Si Fidel hace el trabajo, registrar la comisión
+    if (orden.haceLoFidel) {
+      const comisionesFidel = JSON.parse(localStorage.getItem('comisionesFidel') || '[]');
+      comisionesFidel.push({
+        id: Date.now(),
+        ordenId: orden.id,
+        doctor: orden.doctor,
+        trabajo: orden.trabajo,
+        unidades: orden.unidades,
+        comisionPorUnidad: 5,
+        comisionTotal: orden.unidades * 5,
+        fecha: new Date().toLocaleString('es-MX'),
+        persona: 'Fidel'
+      });
+      localStorage.setItem('comisionesFidel', JSON.stringify(comisionesFidel));
+    }
+
     // Si hay escaneo, registrar el gasto en localStorage
     if (orden.escaneo) {
       const gastosEscaneo = JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
@@ -923,18 +1122,39 @@ function OrdenesModule() {
       localStorage.setItem('gastosEscaneo', JSON.stringify(gastosEscaneo));
     }
 
-    // Guardar orden completa en localStorage para sincronizar con otros módulos
-    const ordenesAll = JSON.parse(localStorage.getItem('ordenesRegistradas') || '[]');
-    ordenesAll.push(ordenConMetadata);
-    localStorage.setItem('ordenesRegistradas', JSON.stringify(ordenesAll));
+    // Guardar orden completa en localStorage para sincronizar con Producción
+    const ordenesProduccion = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
+    const ordenProduccion = {
+      id: ordenConMetadata.id,
+      folio: `ORD-${ordenConMetadata.id}`,
+      doctor: ordenConMetadata.doctor,
+      paciente: ordenConMetadata.paciente,
+      trabajo: ordenConMetadata.trabajo,
+      dientes: ordenConMetadata.dientes || '',
+      unidades: ordenConMetadata.unidades,
+      estado: 'recepcion',
+      asignado_a: 'Sistema',
+      historial: [{
+        fase: 'recepcion',
+        fecha: new Date().toLocaleString('es-MX'),
+        usuario: 'Sistema',
+        notas: 'Ingresado desde Órdenes'
+      }],
+      fotos_evidencia: [],
+      notas_trabajos: '',
+      ...ordenConMetadata
+    };
+    ordenesProduccion.push(ordenProduccion);
+    localStorage.setItem('produccionOrdenes', JSON.stringify(ordenesProduccion));
 
     setAiStep('upload');
     setAiResult(null);
     setShowManual(false);
-    setManualData({ doctor:'', paciente:'', trabajo:'', color:'', unidades:1, horaLlegada:'', fechaEntrega:'', esGarantia:false, escaneo:false });
+    setManualData({ doctor:'', paciente:'', trabajo:'', color:'', unidades:1, horaLlegada:'', fechaEntrega:'', esGarantia:false, haceLoFidel:false, escaneo:false });
 
-    let mensaje = `✅ Orden de ${orden.doctor} enviada automáticamente a Producción\n\n📋 ${orden.paciente} - ${orden.trabajo} (${orden.unidades})\n⏰ Llegó: ${orden.horaLlegada}\n📅 Entrega: ${orden.fechaEntrega}`;
+    let mensaje = `✅ Orden enviada a Producción (RECEPCIÓN)\n\n📋 ${orden.paciente} - ${orden.trabajo} (${orden.unidades})\n👨‍⚕️ Dr: ${orden.doctor}\n⏰ Llegó: ${orden.horaLlegada}\n📅 Entrega: ${orden.fechaEntrega}\n\n→ La orden ya está visible en el módulo de Producción`;
     if (orden.esGarantia) mensaje += `\n🔄 Marcada como GARANTÍA`;
+    if (orden.haceLoFidel) mensaje += `\n👨‍🔧 Fidel realiza trabajo (+$${orden.unidades * 5} comisión)`;
     if (orden.escaneo) mensaje += `\n📱 Escaneo: Juan/Abril (-$${orden.unidades * 10})`;
     alert(mensaje);
   };
@@ -999,8 +1219,18 @@ function OrdenesModule() {
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
             <Field label="Doctor *"><input value={manualData.doctor} onChange={e=>setManualData({...manualData, doctor:e.target.value})} placeholder="Dr. Nombre Apellido" /></Field>
             <Field label="Paciente *"><input value={manualData.paciente} onChange={e=>setManualData({...manualData, paciente:e.target.value})} placeholder="Nombre paciente" /></Field>
-            <Field label="Tipo de trabajo *"><input value={manualData.trabajo} onChange={e=>setManualData({...manualData, trabajo:e.target.value})} placeholder="ej: Corona Zirconia, Puente, etc" /></Field>
-            <Field label="Color"><input value={manualData.color} onChange={e=>setManualData({...manualData, color:e.target.value})} placeholder="ej: A2, B1, etc" /></Field>
+            <Field label="Tipo de trabajo *">
+              <select value={manualData.trabajo} onChange={e=>setManualData({...manualData, trabajo:e.target.value})} style={{ padding:'10px' }}>
+                <option value="">Selecciona un tipo de prótesis</option>
+                {PROTESIS_TIPOS.map(tipo => <option key={tipo.id} value={tipo.label}>{tipo.label}</option>)}
+              </select>
+            </Field>
+            <Field label="Color">
+              <select value={manualData.color} onChange={e=>setManualData({...manualData, color:e.target.value})} style={{ padding:'10px' }}>
+                <option value="">Selecciona el color (sombra)</option>
+                {SHADE_COLORS.map(shade => <option key={shade.code} value={shade.code}>{shade.label}</option>)}
+              </select>
+            </Field>
             <Field label="Unidades *"><input type="number" value={manualData.unidades} onChange={e=>setManualData({...manualData, unidades:Number(e.target.value)})} min="1" /></Field>
             <Field label="Hora de llegada *"><input type="time" value={manualData.horaLlegada} onChange={e=>setManualData({...manualData, horaLlegada:e.target.value})} /></Field>
             <Field label="Fecha de entrega *"><input type="date" value={manualData.fechaEntrega} onChange={e=>setManualData({...manualData, fechaEntrega:e.target.value})} /></Field>
@@ -1012,6 +1242,13 @@ function OrdenesModule() {
               <label style={{ cursor:'pointer', fontSize:14, fontWeight:600 }}>
                 🔄 Garantía/Repetición
                 <div style={{ fontSize:12, color:'var(--text-muted)', fontWeight:400, marginTop:2 }}>No se cobra, pero se registra como gasto</div>
+              </label>
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer' }}>
+              <input type="checkbox" checked={manualData.haceLoFidel} onChange={e=>setManualData({...manualData, haceLoFidel:e.target.checked})} style={{ cursor:'pointer', width:18, height:18 }} />
+              <label style={{ cursor:'pointer', fontSize:14, fontWeight:600 }}>
+                👨‍🔧 Lo hace Fidel
+                <div style={{ fontSize:12, color:'var(--text-muted)', fontWeight:400, marginTop:2 }}>+$5 comisión por trabajo</div>
               </label>
             </div>
             <div style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer' }}>
@@ -1304,13 +1541,36 @@ function ProduccionIntegradaModule() {
     }
   };
 
+  const calcularCostoOrden = (trabajo, unidades) => {
+    const tarifas = JSON.parse(localStorage.getItem('tarifasPrecios') || '[]');
+    const tarifa = tarifas.find(t => t.tipo.toLowerCase() === trabajo.toLowerCase());
+    return tarifa ? tarifa.costoBase * unidades : 0;
+  };
+
+  const registrarCostoOrden = (orderId, costo, trabajo, unidades) => {
+    const costos = JSON.parse(localStorage.getItem('costosOrdenes') || '[]');
+    costos.push({
+      id: Date.now(),
+      orderId: orderId,
+      trabajo: trabajo,
+      unidades: unidades,
+      costoUnitario: costo / unidades,
+      costoTotal: costo,
+      fecha: new Date().toLocaleString('es-MX'),
+      estado: 'pendiente'
+    });
+    localStorage.setItem('costosOrdenes', JSON.stringify(costos));
+  };
+
   const handleAgregarOrden = () => {
     if (!formData.folio || !formData.doctor || !formData.paciente) { alert('Completa folio, doctor y paciente'); return; }
     const ahora = new Date();
     const fecha = ahora.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const usuarioActual = localStorage.getItem('usuarioActual') || 'Sistema';
     const fotosEvidencia = formData.foto_base64 ? [{ nombre: formData.foto_orden, data: formData.foto_base64, fecha: fecha }] : [];
-    const nuevoOrden = { id: Math.max(...ordenes.map(o => o.id), 0) + 1, folio: formData.folio, doctor: formData.doctor, paciente: formData.paciente, trabajo: formData.trabajo, dientes: formData.dientes, unidades: formData.unidades, estado: 'recepcion', asignado_a: usuarioActual, historial: [{ fase: 'recepcion', fecha: fecha, usuario: usuarioActual, notas: formData.foto_orden ? `Orden ingresada con foto: ${formData.foto_orden}` : 'Ingresado manualmente' }], fotos_evidencia: fotosEvidencia, notas_trabajos: '' };
+    const costo = calcularCostoOrden(formData.trabajo, formData.unidades);
+    const nuevoOrden = { id: Math.max(...ordenes.map(o => o.id), 0) + 1, folio: formData.folio, doctor: formData.doctor, paciente: formData.paciente, trabajo: formData.trabajo, dientes: formData.dientes, unidades: formData.unidades, costo: costo, estado: 'recepcion', asignado_a: usuarioActual, historial: [{ fase: 'recepcion', fecha: fecha, usuario: usuarioActual, notas: formData.foto_orden ? `Orden ingresada con foto: ${formData.foto_orden}` : 'Ingresado manualmente' }], fotos_evidencia: fotosEvidencia, notas_trabajos: '' };
+    registrarCostoOrden(nuevoOrden.id, costo, formData.trabajo, formData.unidades);
     const nuevasOrdenes = [...ordenes, nuevoOrden];
     setOrdenes(nuevasOrdenes);
     localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
@@ -1350,8 +1610,15 @@ function ProduccionIntegradaModule() {
             <input type="text" placeholder="Folio" value={formData.folio} onChange={(e) => setFormData({...formData, folio: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
             <input type="text" placeholder="Doctor" value={formData.doctor} onChange={(e) => setFormData({...formData, doctor: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
             <input type="text" placeholder="Paciente" value={formData.paciente} onChange={(e) => setFormData({...formData, paciente: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
-            <input type="text" placeholder="Tipo trabajo" value={formData.trabajo} onChange={(e) => setFormData({...formData, trabajo: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+            <select value={formData.trabajo} onChange={(e) => setFormData({...formData, trabajo: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }}>
+              <option value="">Tipo de prótesis</option>
+              {PROTESIS_TIPOS.map(tipo => <option key={tipo.id} value={tipo.label}>{tipo.label}</option>)}
+            </select>
             <input type="text" placeholder="Dientes" value={formData.dientes} onChange={(e) => setFormData({...formData, dientes: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+            <select value={formData.color} onChange={(e) => setFormData({...formData, color: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }}>
+              <option value="">Color (Sombra)</option>
+              {SHADE_COLORS.map(shade => <option key={shade.code} value={shade.code}>{shade.label}</option>)}
+            </select>
             <input type="number" placeholder="Unidades" value={formData.unidades} onChange={(e) => setFormData({...formData, unidades: parseInt(e.target.value)})} min="1" style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
@@ -1376,6 +1643,7 @@ function ProduccionIntegradaModule() {
                   <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>👨‍⚕️ {orden.doctor}</div>
                   <div style={{ fontSize: '12px', color: 'var(--text-secondary)', cursor: 'pointer' }}>👤 {orden.paciente}</div>
                   <div style={{ fontSize: '12px', color: phase.color, marginTop: '6px', fontWeight: 600 }}>{orden.trabajo}</div>
+                  {orden.costo > 0 && <div style={{ fontSize: '11px', color: 'var(--mod-finanzas)', marginTop: '4px', fontWeight: 700 }}>💰 ${orden.costo.toLocaleString('es-MX')}</div>}
                   {orden.asignado_a && <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px', background: 'var(--bg-input)', padding: '4px 8px', borderRadius: '4px' }}>👨‍🔧 {orden.asignado_a}</div>}
                 </div>
               ))}
@@ -2154,16 +2422,116 @@ function FinanzasModule({ currentUser }) {
         ))}
       </SubSection>
 
+      {/* TRACKING DE COSTOS DE ÓRDENES EN PRODUCCIÓN */}
+      {(() => {
+        const ordenes = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
+        const costosOrdenes = JSON.parse(localStorage.getItem('costosOrdenes') || '[]');
+
+        // Filtrar costos por período
+        const ahora = new Date();
+        const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+        const inicioSemana = new Date(hoy);
+        inicioSemana.setDate(hoy.getDate() - hoy.getDay() + 1); // Lunes
+        const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
+
+        const costosFiltrados = costosOrdenes.filter(costo => {
+          const fechaCosto = new Date(costo.fecha.split(' ')[0].split('-')[2],
+                                      parseInt(costo.fecha.split(' ')[0].split('-')[1]) - 1,
+                                      costo.fecha.split(' ')[0].split('-')[0]);
+          if (vista === 'dia') return fechaCosto >= hoy;
+          if (vista === 'semana') return fechaCosto >= inicioSemana;
+          if (vista === 'mes') return fechaCosto >= inicioMes;
+          return true;
+        });
+
+        const totalCostos = costosFiltrados.reduce((sum, c) => sum + c.costoTotal, 0);
+        const costosPorDoctor = {};
+        const costosPorTrabajo = {};
+
+        costosFiltrados.forEach(costo => {
+          const orden = ordenes.find(o => o.id === costo.orderId);
+          if (orden) {
+            costosPorDoctor[orden.doctor] = (costosPorDoctor[orden.doctor] || 0) + costo.costoTotal;
+            costosPorTrabajo[costo.trabajo] = (costosPorTrabajo[costo.trabajo] || 0) + costo.costoTotal;
+          }
+        });
+
+        return costosFiltrados.length > 0 ? (
+          <div>
+            <SubSection title="💰 Tracking de Costos de Órdenes" color="var(--mod-finanzas)" description={`Total de costos en producción: $${totalCostos.toLocaleString()}`}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+                {/* Costos por Doctor */}
+                <div>
+                  <h4 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>👨‍⚕️ Costos por Doctor</h4>
+                  {Object.entries(costosPorDoctor).map(([doctor, costo]) => (
+                    <div key={doctor} style={{ display: 'flex', justifyContent: 'space-between', padding: 10, background: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', marginBottom: 8, fontSize: 13 }}>
+                      <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{doctor}</span>
+                      <span style={{ fontWeight: 700, color: 'var(--mod-finanzas)' }}>${costo.toLocaleString('es-MX')}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Costos por Tipo de Trabajo */}
+                <div>
+                  <h4 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>🦷 Costos por Tipo de Prótesis</h4>
+                  {Object.entries(costosPorTrabajo).map(([trabajo, costo]) => (
+                    <div key={trabajo} style={{ display: 'flex', justifyContent: 'space-between', padding: 10, background: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', marginBottom: 8, fontSize: 13 }}>
+                      <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{trabajo}</span>
+                      <span style={{ fontWeight: 700, color: 'var(--mod-finanzas)' }}>${costo.toLocaleString('es-MX')}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Listado de órdenes con costos */}
+              <h4 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>📋 Órdenes Activas</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: '0.8fr 1fr 1.2fr 0.8fr 0.8fr', gap: 12, marginBottom: 12, fontSize: 11, fontWeight: 700, color: 'var(--text-muted)' }}>
+                <div>Folio</div><div>Doctor</div><div>Trabajo</div><div>Unidades</div><div>Costo</div>
+              </div>
+              {ordenes.map((orden) => {
+                const costo = costosFiltrados.find(c => c.orderId === orden.id);
+                return costo ? (
+                  <div key={orden.id} style={{ display: 'grid', gridTemplateColumns: '0.8fr 1fr 1.2fr 0.8fr 0.8fr', gap: 12, alignItems: 'center', padding: 12, background: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', marginBottom: 8, borderLeft: `3px solid var(--mod-finanzas)`, fontSize: 12 }}>
+                    <span style={{ fontWeight: 600 }}>{orden.folio}</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>{orden.doctor.split(' ')[0]}</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>{costo.trabajo}</span>
+                    <span style={{ textAlign: 'center', fontWeight: 600 }}>{costo.unidades}</span>
+                    <span style={{ textAlign: 'center', fontWeight: 700, color: 'var(--mod-finanzas)' }}>${costo.costoTotal.toLocaleString('es-MX')}</span>
+                  </div>
+                ) : null;
+              })}
+
+              <div style={{ padding: 12, background: 'rgba(201,169,110,0.1)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(201,169,110,0.2)', display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
+                <span style={{ fontWeight: 700 }}>💰 Total de Costos de Órdenes:</span>
+                <span style={{ fontSize: 18, fontWeight: 900, color: 'var(--metallic-gold)' }}>${totalCostos.toLocaleString('es-MX')}</span>
+              </div>
+            </SubSection>
+          </div>
+        ) : null;
+      })()}
+
       {/* GASTOS POR ESCANEO - JUAN/ABRIL */}
       {(() => {
         const gastosEscaneo = JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
-        const totalEscaneo = gastosEscaneo.reduce((sum, g) => sum + g.costoTotal, 0);
-        return gastosEscaneo.length > 0 ? (
+
+        // Filtrar gastos de escaneo por período
+        const gastosEscaneoFiltrados = gastosEscaneo.filter(gasto => {
+          const fechaGasto = new Date(gasto.fecha.split(' ')[0].split('-')[2],
+                                       parseInt(gasto.fecha.split(' ')[0].split('-')[1]) - 1,
+                                       gasto.fecha.split(' ')[0].split('-')[0]);
+          if (vista === 'dia') return fechaGasto >= hoy;
+          if (vista === 'semana') return fechaGasto >= inicioSemana;
+          if (vista === 'mes') return fechaGasto >= inicioMes;
+          return true;
+        });
+
+        const totalEscaneo = gastosEscaneoFiltrados.reduce((sum, g) => sum + g.costoTotal, 0);
+        return gastosEscaneoFiltrados.length > 0 ? (
           <SubSection title="💳 Gastos por Escaneo (Juan/Abril)" color="var(--mod-finanzas)" description={`Total acumulado: $${totalEscaneo.toLocaleString()}`}>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr', gap:12, marginBottom:12, fontSize:12, fontWeight:700, color:'var(--text-muted)' }}>
               <div>Doctor</div><div>Trabajo</div><div>Unidades</div><div>Costo/ud</div><div>Total</div>
             </div>
-            {gastosEscaneo.map((g, i) => (
+            {gastosEscaneoFiltrados.map((g, i) => (
               <div key={i} style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr', gap:12, alignItems:'center', padding:12, background:'var(--bg-primary)', borderRadius:'var(--radius-md)', marginBottom:8, borderLeft:'3px solid var(--info)' }}>
                 <span style={{ fontSize:13, fontWeight:600 }}>{g.doctor}</span>
                 <span style={{ fontSize:13, color:'var(--text-secondary)' }}>{g.trabajo}</span>
@@ -2489,15 +2857,20 @@ const NOMINA_DATA = [
 function NominaModule() {
   const [data, setData] = useState(() => {
     const gastosEscaneo = JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
+    const comisionesFidel = JSON.parse(localStorage.getItem('comisionesFidel') || '[]');
+
     const escaneosPorUnidad = gastosEscaneo.length > 0 ? gastosEscaneo.length : 0;
     const totalEscaneos = gastosEscaneo.reduce((sum, g) => sum + g.costoTotal, 0);
+
+    const trabajosFidel = comisionesFidel.length;
+    const comisionTotal = comisionesFidel.reduce((sum, c) => sum + c.comisionTotal, 0);
 
     // Juan/Abril son equipo único, dividen 50-50 (opcional, aquí mostramos total)
     return [
       { nombre:'Rafael', rol:'Técnico Principal', horas:45.3, trabajos:12, base:4500, comisiones:3200, escaneos:0, total:7700, aprobado:false },
       { nombre:'Montserrat', rol:'Técnico', horas:42.0, trabajos:10, base:3800, comisiones:2800, escaneos:0, total:6600, aprobado:false },
       { nombre:'Aram', rol:'Diseñador Exocad', horas:40.0, trabajos:8, base:4000, comisiones:0, escaneos:0, total:4000, aprobado:false },
-      { nombre:'Fidel', rol:'Técnico', horas:46.8, trabajos:15, base:3500, comisiones:0, escaneos:0, total:3500, aprobado:false },
+      { nombre:'Fidel', rol:'Técnico + Comisiones', horas:46.8, trabajos:trabajosFidel, base:3500, comisiones:comisionTotal, escaneos:0, total:3500+comisionTotal, aprobado:false },
       { nombre:'Kevin', rol:'Mensajero + Lab', horas:42.5, trabajos:0, base:3000, comisiones:0, escaneos:0, total:3000, aprobado:false },
       { nombre:'Juan/Abril', rol:'Escaneo y Servicios', horas:totalEscaneos>0?Math.ceil(totalEscaneos/10):0, trabajos:escaneosPorUnidad, base:0, comisiones:0, escaneos:totalEscaneos, total:totalEscaneos, aprobado:false },
     ];
