@@ -141,7 +141,6 @@ const MODULES = [
   { id: 'dashboard',   icon: '⬡',  label: 'Dashboard',      desc: 'Resumen general', color: 'var(--accent-blue)' },
   { id: 'ordenes',     icon: '📋', label: 'Órdenes',         desc: 'Pedidos de doctores', color: 'var(--mod-ordenes)' },
   { id: 'produccion',  icon: '🏭', label: 'Producción',      desc: 'Tablero de trabajo', color: 'var(--mod-produccion)' },
-  { id: 'evidencia',   icon: '📸', label: 'Control de Trabajo', desc: 'Evidencia, tiempos y fase de producción', color: 'var(--mod-evidencia)' },
   { id: 'checkin',     icon: '📍', label: 'Asistencia',      desc: 'Check-in diario', color: 'var(--mod-checkin)' },
   { id: 'mensajeria',  icon: '🚗', label: 'Mensajería',      desc: 'Recolecciones', color: 'var(--mod-mensajeria)' },
   { id: 'cobros',      icon: '💳', label: 'Cobros',          desc: 'Pagos de doctores', color: 'var(--mod-cobros)' },
@@ -167,11 +166,11 @@ const USERS = [
 ];
 
 const ROLE_MODULES = {
-  'itzel':  ['dashboard','ordenes','produccion','evidencia','checkin','mensajeria','cobros','lab-externo','inventario','tarifas','config-ia','finanzas','notas-ia','nomina','corte','doctores','config'],
+  'itzel':  ['dashboard','ordenes','produccion','checkin','mensajeria','cobros','lab-externo','inventario','tarifas','config-ia','finanzas','notas-ia','nomina','corte','doctores','config'],
   'montserrat':   ['dashboard','ordenes','produccion','cobros','inventario','tarifas','lab-externo','notas-ia','corte','doctores','config'],
   'rafael': ['dashboard','ordenes','produccion','checkin','lab-externo','inventario','notas-ia'],
-  'aram': ['dashboard','ordenes','produccion','evidencia','notas-ia'],
-  'fidel': ['dashboard','produccion','evidencia','notas-ia'],
+  'aram': ['dashboard','ordenes','produccion','notas-ia'],
+  'fidel': ['dashboard','produccion','notas-ia'],
   'kevin': ['dashboard','ordenes','produccion','lab-externo','notas-ia'],
 };
 
@@ -1199,317 +1198,156 @@ function OrdenesModule() {
 // ============================================================
 // PRODUCCIÓN — KANBAN (colores fuertes, sin tiempos ni viáticos)
 // ============================================================
-function ProduccionModule() {
-  const PHASES = [
-    { id:'registro',      label:'📋 REGISTRO',             color:'#6366F1', desc:'Asignar y registrar' },
-    { id:'en-proceso',    label:'⚙️ EN PROCESO',           color:'#8B5CF6', desc:'Trabajando' },
-    { id:'acabado',       label:'✨ ACABADO',              color:'#EC4899', desc:'Terminando detalles' },
-    { id:'calidad',       label:'🔍 CALIDAD',              color:'#06B6D4', desc:'Control final' },
-    { id:'listo',         label:'✅ LISTO',                color:'#34D399', desc:'Listo para entrega' },
+// ============================================================
+// MÓDULO PRODUCCIÓN INTEGRADO
+// ============================================================
+
+const PRODUCTION_PHASES = [
+  { id: 'recepcion',      label: '📥 RECEPCIÓN',        desc: 'Entrada y asignación de folio',  color: '#60A5FA' },
+  { id: 'modelos',        label: '🖨️ MODELOS',         desc: 'Fabricación/resina/yeso',       color: '#F59E0B' },
+  { id: 'escaneo-diseño', label: '🔍 ESCANEO & DISEÑO', desc: 'Escaneo e diseño CAD',         color: '#8B5CF6' },
+  { id: 'trabajo-fisico', label: '🔧 TRABAJO FÍSICO',   desc: 'Perfilado, colado, ajuste',    color: '#EC4899' },
+  { id: 'fresado',        label: '⚙️ FRESADO',         desc: 'Fresado CAD/CAM',              color: '#06B6D4' },
+  { id: 'sinterizado',    label: '🔥 SINTERIZADO',     desc: 'Sintetización de piezas',      color: '#10B981' },
+  { id: 'porcelana',      label: '🎨 PORCELANA',       desc: 'Aplicación de porcelana',      color: '#F472B6' },
+  { id: 'calidad',        label: '✅ CALIDAD',         desc: 'Control final e inspección',   color: '#34D399' },
+];
+
+function ProduccionIntegradaModule() {
+  const ordenesGuardadas = localStorage.getItem('produccionOrdenes');
+  const INITIAL_ORDERS = ordenesGuardadas ? JSON.parse(ordenesGuardadas) : [
+    { id: 1, folio: 'ZL-0001', doctor: 'Dr. Martínez López', paciente: 'María García', trabajo: 'Corona Zirconia', dientes: '11, 12', unidades: 2, estado: 'recepcion', asignado_a: null, historial: [{ fase: 'recepcion', fecha: '2026-05-27 09:30', usuario: 'Itzel', notas: 'Ingresado manualmente' }], fotos_evidencia: [], notas_trabajos: '' },
+    { id: 2, folio: 'ZL-0002', doctor: 'Dra. Rodríguez', paciente: 'Pedro Ruiz', trabajo: 'Puente Metal-Cerámica', dientes: '24, 25, 26', unidades: 3, estado: 'modelos', asignado_a: 'Rafael', historial: [{ fase: 'recepcion', fecha: '2026-05-26 08:00', usuario: 'Itzel', notas: 'Ingresado' }, { fase: 'modelos', fecha: '2026-05-26 14:30', usuario: 'Rafael', notas: 'Modelos en yeso completados' }], fotos_evidencia: [], notas_trabajos: 'Cliente VIP' }
   ];
 
-  const PERSONAS = ['Rafael', 'Juan', 'Aram', 'Montserrat', 'Fidel', 'Kevin'];
+  const [ordenes, setOrdenes] = React.useState(INITIAL_ORDERS);
+  const [selectedOrder, setSelectedOrder] = React.useState(null);
+  const [drawerOpen, setDrawerOpen] = React.useState(false);
+  const [showFormularioRecepcion, setShowFormularioRecepcion] = React.useState(false);
+  const [formData, setFormData] = React.useState({ folio: '', doctor: '', paciente: '', trabajo: '', dientes: '', unidades: 1 });
 
-  const [items, setItems] = useState([
-    { id:1, orden:'ZL-0001', paciente:'María García', trabajo:'Corona Zirconia ×2', persona:'Rafael', fase:'en-proceso', fechaEntrega:'2026-05-27', doctor:'Dr. Martínez' },
-    { id:2, orden:'ZL-0002', paciente:'Pedro Ruiz', trabajo:'Puente ×3', persona:null, fase:'registro', fechaEntrega:'2026-05-28', doctor:'Dra. López' },
-    { id:3, orden:'ZL-0003', paciente:'Ana Torres', trabajo:'Carilla ×6', persona:'Aram', fase:'listo', fechaEntrega:'2026-05-26', doctor:'Dr. García' },
-    { id:4, orden:'ZL-0004', paciente:'Luis Mendoza', trabajo:'Corona Implante ×1', persona:'Rafael', fase:'en-proceso', fechaEntrega:'2026-05-30', doctor:'Dr. Martínez' },
-    { id:5, orden:'ZL-0005', paciente:'Carlos Jiménez', trabajo:'Encerado dx ×8', persona:'Montserrat', fase:'acabado', fechaEntrega:'2026-06-02', doctor:'Dra. Rodríguez' },
-  ]);
-  const [archivedItems, setArchivedItems] = useState([]);
+  const handleDragStart = (e, order) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('orderId', order.id); };
+  const handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
 
-  const daysLeft = (fecha) => Math.ceil((new Date(fecha) - new Date()) / 86400000);
-
-  const moverFase = (id, nuevaFase) => {
-    setItems(items.map(it => it.id === id ? {...it, fase: nuevaFase} : it));
+  const handleDrop = (e, nuevoEstado) => {
+    e.preventDefault();
+    const orderId = parseInt(e.dataTransfer.getData('orderId'));
+    const orden = ordenes.find(o => o.id === orderId);
+    if (orden && orden.estado !== nuevoEstado) {
+      const ahora = new Date();
+      const fecha = ahora.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const usuarioActual = localStorage.getItem('usuarioActual') || 'Sistema';
+      const nuevasOrdenes = ordenes.map(o => {
+        if (o.id === orderId) {
+          return { ...o, estado: nuevoEstado, asignado_a: usuarioActual, historial: [...o.historial, { fase: nuevoEstado, fecha: fecha, usuario: usuarioActual, notas: `Movido a ${PRODUCTION_PHASES.find(p => p.id === nuevoEstado)?.label}` }] };
+        }
+        return o;
+      });
+      setOrdenes(nuevasOrdenes);
+      localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+    }
   };
 
-  const asignarPersona = (id, persona) => {
-    setItems(items.map(it => it.id === id ? {...it, persona} : it));
+  const handleAgregarOrden = () => {
+    if (!formData.folio || !formData.doctor || !formData.paciente) { alert('Completa folio, doctor y paciente'); return; }
+    const ahora = new Date();
+    const fecha = ahora.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const usuarioActual = localStorage.getItem('usuarioActual') || 'Sistema';
+    const nuevoOrden = { id: Math.max(...ordenes.map(o => o.id), 0) + 1, folio: formData.folio, doctor: formData.doctor, paciente: formData.paciente, trabajo: formData.trabajo, dientes: formData.dientes, unidades: formData.unidades, estado: 'recepcion', asignado_a: usuarioActual, historial: [{ fase: 'recepcion', fecha: fecha, usuario: usuarioActual, notas: 'Ingresado manualmente' }], fotos_evidencia: [], notas_trabajos: '' };
+    const nuevasOrdenes = [...ordenes, nuevoOrden];
+    setOrdenes(nuevasOrdenes);
+    localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+    setFormData({ folio: '', doctor: '', paciente: '', trabajo: '', dientes: '', unidades: 1 });
+    setShowFormularioRecepcion(false);
   };
 
-  const archivarTrabajo = (item) => {
-    const archivedItem = { ...item, fechaArchivado: new Date().toLocaleString('es-MX'), estado:'completado' };
-    setArchivedItems([archivedItem, ...archivedItems]);
-    localStorage.setItem('archivedProduccionItems', JSON.stringify([archivedItem, ...archivedItems]));
-    setItems(items.filter(it => it.id !== item.id));
-    alert(`✅ "${item.trabajo}" archivado\n\n💳 Disponible en Cobros para registrar el pago`);
-  };
+  const openDrawer = (order) => { setSelectedOrder(order); setDrawerOpen(true); };
+  const closeDrawer = () => { setDrawerOpen(false); setTimeout(() => setSelectedOrder(null), 300); };
+  const getOrdenesPorFase = (faseId) => ordenes.filter(o => o.estado === faseId);
 
   return (
-    <div style={{ animation:'fadeIn 0.3s' }}>
-      <SectionHeader title="Producción" subtitle="Arrastra tarjetas entre fases o usa el menú para cambiar estado y asignar personal" color="var(--mod-produccion)" icon="🏭" />
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '16px', padding: '20px', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+      <SectionHeader title="Producción" subtitle="Arrastra órdenes entre fases | Haz clic en Paciente/Doctor para detalles" color="var(--mod-produccion)" icon="🏭">
+        <button onClick={() => setShowFormularioRecepcion(!showFormularioRecepcion)} style={{ padding: '8px 16px', background: 'var(--mod-produccion)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600 }}>➕ Nueva Orden</button>
+      </SectionHeader>
 
-      <InfoCard icon="💡" title="¿Cómo funciona?" description="1️⃣ Ordenes llegan a REGISTRO 2️⃣ Asigna una persona 3️⃣ Muévela conforme avanza: EN PROCESO → ACABADO → CALIDAD → LISTO 4️⃣ Archiva cuando está lista para entrega" color="var(--mod-produccion)" />
+      {showFormularioRecepcion && (
+        <div style={{ background: 'var(--bg-card)', padding: '20px', borderRadius: 'var(--radius-lg)', border: '2px solid var(--mod-produccion)', marginBottom: '16px' }}>
+          <h3 style={{ marginBottom: '12px', color: 'var(--text-primary)' }}>📥 Registrar Nueva Orden</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginBottom: '12px' }}>
+            <input type="text" placeholder="Folio" value={formData.folio} onChange={(e) => setFormData({...formData, folio: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+            <input type="text" placeholder="Doctor" value={formData.doctor} onChange={(e) => setFormData({...formData, doctor: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+            <input type="text" placeholder="Paciente" value={formData.paciente} onChange={(e) => setFormData({...formData, paciente: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+            <input type="text" placeholder="Tipo trabajo" value={formData.trabajo} onChange={(e) => setFormData({...formData, trabajo: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+            <input type="text" placeholder="Dientes" value={formData.dientes} onChange={(e) => setFormData({...formData, dientes: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+            <input type="number" placeholder="Unidades" value={formData.unidades} onChange={(e) => setFormData({...formData, unidades: parseInt(e.target.value)})} min="1" style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button onClick={handleAgregarOrden} style={{ padding: '10px 16px', background: 'var(--success)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600, flex: 1 }}>✅ Guardar</button>
+            <button onClick={() => setShowFormularioRecepcion(false)} style={{ padding: '10px 16px', background: 'var(--bg-card-hover)', color: '#fff', border: '1px solid var(--border-medium)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600 }}>✕</button>
+          </div>
+        </div>
+      )}
 
-      <div style={{ display:'flex', gap:12, overflowX:'auto', paddingBottom:8 }}>
-        {PHASES.map(phase => {
-          const phaseItems = items.filter(it => it.fase === phase.id);
-          return (
-            <div key={phase.id} style={{ flex:'1 1 200px', minWidth:240, background:'var(--bg-card)', borderRadius:'var(--radius-lg)', border:'1px solid var(--border-subtle)', display:'flex', flexDirection:'column' }}>
-
-              {/* HEADER */}
-              <div style={{ padding:'14px 16px', borderBottom:`4px solid ${phase.color}`, background:`${phase.color}10` }}>
-                <div style={{ fontSize:13, fontWeight:800, color:phase.color }}>{phase.label}</div>
-                <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:2 }}>{phase.desc}</div>
-                <div style={{ fontSize:20, fontWeight:900, color:phase.color, marginTop:6 }}>{phaseItems.length}</div>
-              </div>
-
-              {/* ITEMS */}
-              <div style={{ padding:10, flex:1, display:'flex', flexDirection:'column', gap:8, overflowY:'auto', minHeight:200 }}>
-                {phaseItems.map(it => {
-                  const dl = daysLeft(it.fechaEntrega);
-                  const isLate = dl < 0;
-                  const isToday = dl === 0;
-                  return (
-                    <div key={it.id} style={{ padding:12, background:isLate?'rgba(248,113,113,0.1)':'var(--bg-primary)', borderRadius:'var(--radius-md)', border:`1px solid ${isLate?'var(--danger)':isToday?'var(--warning)':'var(--border-subtle)'}` }}>
-
-                      {/* ORDEN + URGENCIA */}
-                      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-                        <span style={{ fontSize:13, fontWeight:800, color:phase.color }}>{it.orden}</span>
-                        <div style={{ display:'flex', gap:4 }}>
-                          {isLate && <span title="¡VENCIDO!">🔴</span>}
-                          {isToday && <span title="¡Hoy!">🟡</span>}
-                        </div>
-                      </div>
-
-                      {/* PACIENTE Y TRABAJO */}
-                      <div style={{ fontSize:12, fontWeight:700, marginBottom:2, color:'var(--text-primary)' }}>{it.paciente}</div>
-                      <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:10 }}>{it.trabajo}</div>
-
-                      {/* ASIGNACIÓN DE PERSONA */}
-                      <div style={{ marginBottom:10 }}>
-                        <label style={{ fontSize:10, fontWeight:700, color:'var(--text-muted)', display:'block', marginBottom:4 }}>👤 Asignado:</label>
-                        <select value={it.persona || ''} onChange={e => asignarPersona(it.id, e.target.value || null)} style={{ fontSize:11, padding:'6px 8px', width:'100%', borderRadius:'var(--radius-sm)' }}>
-                          <option value="">— Sin asignar —</option>
-                          {PERSONAS.map(p => <option key={p} value={p}>{p}</option>)}
-                        </select>
-                        {it.persona && <div style={{ marginTop:4, padding:'6px 8px', background:`${phase.color}20`, borderRadius:'var(--radius-sm)', fontSize:11, fontWeight:700, color:phase.color }}>✓ {it.persona}</div>}
-                      </div>
-
-                      {/* CONTROLES DE FASE */}
-                      {phase.id !== 'listo' && (
-                        <button onClick={() => {
-                          const nextPhaseIndex = PHASES.findIndex(p => p.id === phase.id) + 1;
-                          if (nextPhaseIndex < PHASES.length) {
-                            moverFase(it.id, PHASES[nextPhaseIndex].id);
-                          }
-                        }} style={{ width:'100%', padding:'8px', background:phase.color, color:'#fff', border:'none', borderRadius:'var(--radius-sm)', cursor:'pointer', fontSize:11, fontWeight:700, marginBottom:6 }}>
-                          ↓ Siguiente fase
-                        </button>
-                      )}
-
-                      {/* FECHAS */}
-                      <div style={{ fontSize:10, fontWeight:700, color:isLate?'var(--danger)':isToday?'var(--warning)':'var(--text-muted)', textAlign:'right' }}>
-                        {isLate ? `${Math.abs(dl)}d VENCIDO` : isToday ? 'HOY' : `${dl}d restantes`}
-                      </div>
-
-                      {/* BOTÓN ARCHIVAR */}
-                      {phase.id === 'listo' && (
-                        <button onClick={() => archivarTrabajo(it)} style={{ width:'100%', padding:'8px', background:'var(--success)', color:'#fff', border:'none', borderRadius:'var(--radius-sm)', cursor:'pointer', fontSize:11, fontWeight:700, marginTop:6 }}>
-                          📦 Entregar
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-                {phaseItems.length === 0 && <div style={{ textAlign:'center', padding:20, color:'var(--text-muted)', fontSize:12, fontStyle:'italic' }}>Sin trabajos</div>}
-              </div>
+      <div style={{ display: 'flex', gap: '16px', flex: 1, overflow: 'auto', paddingRight: '8px', minHeight: 0 }}>
+        {PRODUCTION_PHASES.map(phase => (
+          <div key={phase.id} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, phase.id)} style={{ flex: '0 0 280px', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: `2px solid ${phase.color}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+            <div style={{ background: `${phase.color}20`, borderBottom: `2px solid ${phase.color}`, padding: '12px', minHeight: 0 }}>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: phase.color }}>{phase.label}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{phase.desc}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '6px' }}>{getOrdenesPorFase(phase.id).length} órdenes</div>
             </div>
-          );
-        })}
+            <div style={{ flex: 1, overflow: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0 }}>
+              {getOrdenesPorFase(phase.id).map(orden => (
+                <div key={orden.id} draggable onDragStart={(e) => handleDragStart(e, orden)} onClick={() => openDrawer(orden)} style={{ background: 'var(--bg-secondary)', border: `2px solid ${phase.color}40`, borderRadius: 'var(--radius-md)', padding: '12px', cursor: 'grab', transition: 'all 0.2s' }} onMouseEnter={(e) => e.target.style.transform = 'translateY(-2px)'} onMouseLeave={(e) => e.target.style.transform = 'none'}>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{orden.folio}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>👨‍⚕️ {orden.doctor}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', cursor: 'pointer' }}>👤 {orden.paciente}</div>
+                  <div style={{ fontSize: '12px', color: phase.color, marginTop: '6px', fontWeight: 600 }}>{orden.trabajo}</div>
+                  {orden.asignado_a && <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px', background: 'var(--bg-input)', padding: '4px 8px', borderRadius: '4px' }}>👨‍🔧 {orden.asignado_a}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
 
-      {/* RESUMEN ARCHIVADOS */}
-      {archivedItems.length > 0 && (
-        <div style={{ marginTop:20, padding:16, background:'var(--bg-card)', borderRadius:'var(--radius-lg)', border:'1px solid var(--border-subtle)' }}>
-          <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>✅ {archivedItems.length} trabajos completados</div>
-          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-            {archivedItems.slice(0, 5).map(it => (
-              <div key={it.id} style={{ padding:'8px 12px', background:'rgba(52,211,153,0.1)', border:'1px solid rgba(52,211,153,0.3)', borderRadius:'var(--radius-md)', fontSize:11, color:'var(--text-secondary)' }}>
-                {it.orden} - {it.paciente}
+      {drawerOpen && selectedOrder && (
+        <div style={{ position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'flex-end', zIndex: 1000 }}>
+          <div style={{ width: '450px', height: '100%', background: 'var(--bg-primary)', borderLeft: '3px solid var(--mod-produccion)', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
+            <div style={{ background: 'var(--mod-produccion)', color: '#fff', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div><div style={{ fontSize: '18px', fontWeight: 700 }}>{selectedOrder.folio}</div><div style={{ fontSize: '13px', opacity: 0.9, marginTop: '4px' }}>{selectedOrder.paciente}</div></div>
+              <button onClick={closeDrawer} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', fontSize: '20px', cursor: 'pointer', width: '40px', height: '40px', borderRadius: '50%' }}>✕</button>
+            </div>
+            <div style={{ padding: '20px', flex: 1, overflowY: 'auto' }}>
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '12px' }}>📋 INFORMACIÓN</h3>
+                <div style={{ display: 'grid', gap: '10px', fontSize: '13px' }}>
+                  <div><span style={{ color: 'var(--text-secondary)' }}>👨‍⚕️ Doctor:</span> <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{selectedOrder.doctor}</span></div>
+                  <div><span style={{ color: 'var(--text-secondary)' }}>👤 Paciente:</span> <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{selectedOrder.paciente}</span></div>
+                  <div><span style={{ color: 'var(--text-secondary)' }}>🦷 Trabajo:</span> <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{selectedOrder.trabajo}</span></div>
+                  <div style={{ background: 'var(--accent-blue-soft)', padding: '10px', borderRadius: 'var(--radius-md)', borderLeft: '3px solid var(--accent-blue)' }}><span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>👨‍🔧 TRABAJA:</span><div style={{ color: 'var(--accent-blue)', fontWeight: 700, marginTop: '4px', fontSize: '14px' }}>{selectedOrder.asignado_a || '⚠️ Sin asignar'}</div></div>
+                </div>
               </div>
-            ))}
-            {archivedItems.length > 5 && <div style={{ fontSize:11, color:'var(--text-muted)' }}>+{archivedItems.length - 5} más</div>}
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '12px' }}>📅 HISTORIAL</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {selectedOrder.historial.map((h, idx) => (
+                    <div key={idx} style={{ background: 'var(--bg-card)', padding: '10px', borderRadius: 'var(--radius-md)', borderLeft: '3px solid var(--mod-produccion)', fontSize: '12px' }}>
+                      <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{PRODUCTION_PHASES.find(p => p.id === h.fase)?.label}</div>
+                      <div style={{ color: 'var(--text-secondary)', marginTop: '4px' }}>⏰ {h.fecha}</div>
+                      <div style={{ color: 'var(--text-secondary)' }}>👤 {h.usuario}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
     </div>
   );
 }
-
-// ============================================================
-// CONTROL DE TRABAJO (Consolidado: Evidencia + Tiempos)
-// ============================================================
-function ControlTrabajoModule() {
-  const [trabajos, setTrabajos] = useState([
-    { id:1, orden:'ZL-0001', paciente:'María García', trabajo:'Corona Zirconia ×2', tecnico:'Rafael', estado:'en-curso', fotoFinal:false, inicio:'08:30', etapa:'Fresando', horaInicio:'2026-05-24 08:30', horaFin:null, es_imprimiendo:false, es_exocad:false, es_fresando:true, es_escaneando:false, es_porcelana:false, repeticion:false, folio:'F001', recibo:'' },
-    { id:2, orden:'ZL-0003', paciente:'Ana Torres', trabajo:'Carilla ×6', tecnico:'Aram', estado:'finalizado', fotoFinal:true, inicio:'07:55', etapa:'Terminado', horaInicio:'2026-05-24 07:55', horaFin:'2026-05-24 14:30', es_imprimiendo:false, es_exocad:false, es_fresando:false, es_escaneando:false, es_porcelana:true, repeticion:false, folio:'F003', recibo:'R003' },
-    { id:3, orden:'ZL-0005', paciente:'Carlos Jiménez', trabajo:'Encerado dx ×8', tecnico:'Montserrat', estado:'pausado', fotoFinal:false, inicio:'09:00', etapa:'Encerado', horaInicio:'2026-05-24 09:00', horaFin:null, es_imprimiendo:false, es_exocad:false, es_fresando:false, es_escaneando:false, es_porcelana:false, repeticion:false, folio:'F005', recibo:'' },
-    { id:4, orden:'ZL-0004', paciente:'Luis Mendoza', trabajo:'Corona Implante ×1', tecnico:'Rafael', estado:'sin-iniciar', fotoFinal:false, inicio:null, etapa:'—', horaInicio:null, horaFin:null, es_imprimiendo:false, es_exocad:false, es_fresando:false, es_escaneando:true, es_porcelana:false, repeticion:false, folio:'', recibo:'' },
-  ]);
-
-  const cambiarEstado = (id, nuevoEstado) => setTrabajos(trabajos.map(t => t.id===id ? {...t, estado:nuevoEstado} : t));
-  const subirFoto = (id) => setTrabajos(trabajos.map(t => t.id===id ? {...t, fotoFinal:true} : t));
-  const actualizarFolio = (id, valor) => setTrabajos(trabajos.map(t => t.id===id ? {...t, folio:valor} : t));
-  const actualizarRecibo = (id, valor) => setTrabajos(trabajos.map(t => t.id===id ? {...t, recibo:valor} : t));
-  const toggleFase = (id, fase) => {
-    const fases = ['es_imprimiendo', 'es_exocad', 'es_escaneando', 'es_fresando', 'es_porcelana'];
-    if (fase === 'es_imprimiendo') {
-      setTrabajos(trabajos.map(t => t.id===id ? {...t, es_imprimiendo:!t.es_imprimiendo, etapa:!t.es_imprimiendo?'Imprimiendo modelos':'Asignado'} : t));
-    } else if (fase === 'es_exocad') {
-      setTrabajos(trabajos.map(t => t.id===id ? {...t, es_exocad:!t.es_exocad, etapa:!t.es_exocad?'Diseñando en exocad':'Asignado'} : t));
-    } else if (fase === 'es_escaneando') {
-      setTrabajos(trabajos.map(t => t.id===id ? {...t, es_escaneando:!t.es_escaneando, etapa:!t.es_escaneando?'Escaneando':'Asignado'} : t));
-    } else if (fase === 'es_fresando') {
-      setTrabajos(trabajos.map(t => t.id===id ? {...t, es_fresando:!t.es_fresando, etapa:!t.es_fresando?'Fresando protesis':'Asignado'} : t));
-    } else if (fase === 'es_porcelana') {
-      setTrabajos(trabajos.map(t => t.id===id ? {...t, es_porcelana:!t.es_porcelana, etapa:!t.es_porcelana?'En porcelana':'Asignado'} : t));
-    }
-  };
-  const toggleRepeticion = (id) => setTrabajos(trabajos.map(t => t.id===id ? {...t, repeticion:!t.repeticion} : t));
-
-  const calcDuration = (t) => {
-    if (!t.horaInicio) return '—';
-    const start = new Date(t.horaInicio);
-    const end = t.horaFin ? new Date(t.horaFin) : new Date();
-    const mins = Math.floor((end - start) / 60000);
-    return `${Math.floor(mins/60)}h ${mins%60}m`;
-  };
-
-  const estadoConfig = {
-    'sin-iniciar': { label:'Sin iniciar', color:'var(--text-muted)', icon:'⬜' },
-    'en-curso':    { label:'Trabajando', color:'#F43F5E', icon:'🔴' },
-    'pausado':     { label:'Pausado', color:'var(--warning)', icon:'🟡' },
-    'finalizado':  { label:'Terminado', color:'var(--success)', icon:'🟢' },
-  };
-
-  return (
-    <div style={{ animation:'fadeIn 0.3s' }}>
-      <SectionHeader title="Control de Trabajo" subtitle="Registro unificado de fases, tiempos y evidencia fotográfica" color="var(--mod-evidencia)" icon="📸" />
-
-      <InfoCard icon="📌" title="¿Cómo funciona?" description="Aquí registras el avance: 1) Qué fase está activa (Escaneando/Fresando/Porcelana), 2) Tiempos de inicio y fin automáticos, 3) Si es trabajo repetido, 4) Foto final obligatoria. Sin foto = no se entrega." color="var(--mod-evidencia)" />
-
-      <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-        {trabajos.map(t => {
-          const ec = estadoConfig[t.estado];
-          return (
-            <div key={t.id} style={{ background:'var(--bg-card)', border:`2px solid ${ec.color}40`, borderRadius:'var(--radius-lg)', padding:20, borderLeft:`5px solid ${ec.color}` }}>
-              <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:14 }}>
-                <div style={{ flex:1 }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:6 }}>
-                    <span style={{ fontSize:20 }}>{ec.icon}</span>
-                    <span style={{ fontSize:16, fontWeight:800, color:'var(--mod-ordenes)' }}>{t.orden}</span>
-                    <Badge color={ec.color}>{ec.label}</Badge>
-                    {t.fotoFinal && <Badge color="var(--success)">📸 Foto OK</Badge>}
-                    {t.estado==='finalizado' && !t.fotoFinal && <Badge color="var(--danger)">⚠ Falta foto</Badge>}
-                    {t.repeticion && <Badge color="var(--info)">🔄 Repetición</Badge>}
-                  </div>
-                  <div style={{ fontSize:15, fontWeight:600 }}>{t.paciente} — {t.trabajo}</div>
-                  <div style={{ fontSize:13, color:'var(--text-muted)', marginTop:2 }}>Técnico: <strong>{t.tecnico}</strong> | Etapa: {t.etapa} | Tiempo: {calcDuration(t)}</div>
-
-                  {/* FOLIO Y RECIBO */}
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginTop:12 }}>
-                    <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-                      <label style={{ fontSize:12, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase' }}>📋 Folio (Entrada)</label>
-                      <input type="text" value={t.folio} onChange={(e) => actualizarFolio(t.id, e.target.value)}
-                        placeholder="ej: F001"
-                        style={{ padding:'8px 10px', borderRadius:'var(--radius-md)', border:'1px solid var(--border-subtle)', background:'var(--bg-primary)', color:'var(--text-primary)', fontSize:13, fontWeight:600 }}
-                      />
-                    </div>
-                    <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-                      <label style={{ fontSize:12, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase' }}>🧾 Recibo (Salida)</label>
-                      <input type="text" value={t.recibo} onChange={(e) => actualizarRecibo(t.id, e.target.value)}
-                        placeholder="ej: R001"
-                        style={{ padding:'8px 10px', borderRadius:'var(--radius-md)', border:'1px solid var(--border-subtle)', background:'var(--bg-primary)', color:'var(--text-primary)', fontSize:13, fontWeight:600 }}
-                      />
-                    </div>
-                  </div>
-                </div>
-                <div style={{ textAlign:'right' }}>
-                  <div style={{ fontSize:24, fontWeight:900, color: t.estado==='finalizado'?'var(--success)':t.estado==='en-curso'?'#F43F5E':'var(--text-muted)' }}>{calcDuration(t)}</div>
-                </div>
-              </div>
-
-              {/* FASES DE PRODUCCIÓN */}
-              <div style={{ background:'rgba(0,0,0,0.2)', borderRadius:'var(--radius-md)', padding:12, marginBottom:14 }}>
-                <div style={{ fontSize:12, fontWeight:700, color:'var(--text-secondary)', marginBottom:8, textTransform:'uppercase' }}>Fase actual:</div>
-                <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                  {[
-                    {key:'es_imprimiendo', label:'🖨️ Imprimiendo modelos', color:'#A78BFA'},
-                    {key:'es_exocad', label:'🖥️ Diseñando en exocad', color:'#8B5CF6'},
-                    {key:'es_escaneando', label:'📱 Escaneando', color:'#0EA5E9'},
-                    {key:'es_fresando', label:'🤖 Fresando protesis', color:'#F97316'},
-                    {key:'es_porcelana', label:'🎨 En porcelana', color:'#EC4899'}
-                  ].map(f => (
-                    <button key={f.key} onClick={() => toggleFase(t.id, f.key)}
-                      style={{
-                        padding:'8px 14px', borderRadius:'var(--radius-md)', border:'none', cursor:'pointer', fontSize:13, fontWeight:600,
-                        background: t[f.key] ? f.color : 'transparent',
-                        color: t[f.key] ? '#fff' : 'var(--text-secondary)',
-                        border: `1px solid ${t[f.key] ? f.color : 'var(--border-subtle)'}`,
-                        transition:'all 0.2s'
-                      }}>
-                      {f.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* ACCIONES */}
-              <div style={{ display:'flex', gap:8, flexWrap:'wrap', justifyContent:'flex-end' }}>
-                <button onClick={() => toggleRepeticion(t.id)}
-                  style={{
-                    padding:'10px 16px', borderRadius:'var(--radius-md)', border:'none', cursor:'pointer', fontSize:13, fontWeight:700,
-                    background: t.repeticion ? 'var(--info)' : 'var(--border-subtle)',
-                    color: t.repeticion ? '#fff' : 'var(--text-secondary)'
-                  }}>
-                  🔄 {t.repeticion ? 'Es repetición' : 'Marcar repetición'}
-                </button>
-
-                {t.estado === 'sin-iniciar' && (
-                  <Btn onClick={() => cambiarEstado(t.id, 'en-curso')} style={{ fontSize:13, padding:'10px 18px' }}>▶ Comenzar</Btn>
-                )}
-                {t.estado === 'en-curso' && (
-                  <>
-                    <button onClick={() => cambiarEstado(t.id, 'pausado')} style={{ padding:'10px 18px', borderRadius:'var(--radius-md)', background:'var(--warning)', border:'none', color:'var(--bg-primary)', cursor:'pointer', fontSize:13, fontWeight:700 }}>⏸ Pausar</button>
-                    <button onClick={() => cambiarEstado(t.id, 'finalizado')} style={{ padding:'10px 18px', borderRadius:'var(--radius-md)', background:'var(--success)', border:'none', color:'#fff', cursor:'pointer', fontSize:13, fontWeight:700 }}>✅ Finalizar</button>
-                  </>
-                )}
-                {t.estado === 'pausado' && (
-                  <>
-                    <Btn onClick={() => cambiarEstado(t.id, 'en-curso')} style={{ fontSize:13, padding:'10px 18px' }}>▶ Reanudar</Btn>
-                    <button onClick={() => cambiarEstado(t.id, 'finalizado')} style={{ padding:'10px 18px', borderRadius:'var(--radius-md)', background:'var(--success)', border:'none', color:'#fff', cursor:'pointer', fontSize:13, fontWeight:700 }}>✅ Finalizar</button>
-                  </>
-                )}
-                {t.estado === 'finalizado' && !t.fotoFinal && (
-                  <button onClick={() => subirFoto(t.id)} style={{ padding:'10px 18px', borderRadius:'var(--radius-md)', background:'var(--mod-evidencia)', border:'none', color:'#fff', cursor:'pointer', fontSize:13, fontWeight:700 }}>📸 Subir foto final</button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-
-// ============================================================
-// CHECK-IN / ASISTENCIA
-// ============================================================
-const CHECKIN_DATA = [
-  { id:1, nombre:'Rafael', dia:'Lun 19', entrada:'08:02', salida:'17:15', horas:'9:13', gps:true, excepcion:null },
-  { id:2, nombre:'Aram', dia:'Lun 19', entrada:'08:30', salida:'17:00', horas:'8:30', gps:true, excepcion:null },
-  { id:3, nombre:'Juan', dia:'Lun 19', entrada:'07:55', salida:'17:30', horas:'9:35', gps:true, excepcion:null },
-  { id:4, nombre:'Abril', dia:'Lun 19', entrada:'08:15', salida:'17:20', horas:'9:05', gps:true, excepcion:null },
-  { id:5, nombre:'Kevin', dia:'Lun 19', entrada:'08:10', salida:'16:45', horas:'8:35', gps:true, excepcion:null },
-  { id:6, nombre:'Montserrat', dia:'Lun 19', entrada:'08:00', salida:'17:00', horas:'9:00', gps:true, excepcion:null },
-  { id:6, nombre:'Rafael', dia:'Mar 20', entrada:'08:00', salida:'17:20', horas:'9:20', gps:true, excepcion:null },
-  { id:7, nombre:'Aram', dia:'Mar 20', entrada:'-', salida:'-', horas:'0:00', gps:false, excepcion:'Permiso justificado' },
-  { id:8, nombre:'Fidel', dia:'Mar 20', entrada:'08:05', salida:'17:10', horas:'9:05', gps:true, excepcion:null },
-];
 
 function CheckinModule({ currentUser }) {
   const [checkinLocation, setCheckinLocation] = useState(null);
@@ -3418,8 +3256,8 @@ function App() {
     switch(activeModule) {
       case 'dashboard': return <Dashboard currentUser={currentUser} onNavigate={setActiveModule} />;
       case 'ordenes': return <OrdenesModule />;
-      case 'produccion': return <ProduccionModule />;
-      case 'evidencia': return <ControlTrabajoModule />;
+      case 'produccion': return <ProduccionIntegradaModule />;
+      // case 'evidencia': REMOVIDO - integrado en Producción
       case 'checkin': return <CheckinModule currentUser={currentUser} />;
       case 'mensajeria': return <MensajeriaModule />;
       case 'cobros': return <CobrosModule />;
