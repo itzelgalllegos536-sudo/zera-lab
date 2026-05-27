@@ -1635,7 +1635,8 @@ Responde SOLO con el JSON, sin explicaciones.`
             confianza: 92
           }));
 
-          setStep('confirmacion');
+          // AUTO-FILL ODONTOGRAMA: Navega a odontograma para que vea los dientes auto-seleccionados
+          setStep('odontograma');
           setProcessingMessage('');
         } catch (error) {
           console.error('Error parsing API response:', error);
@@ -2254,6 +2255,7 @@ function ProduccionIntegradaModule({ onNavigate }) {
   const [showFormularioRecepcion, setShowFormularioRecepcion] = React.useState(false);
   const [formData, setFormData] = React.useState({ folio: '', doctor: '', paciente: '', trabajo: '', dientes: '', unidades: 1, foto_orden: null, foto_base64: null });
   const [procesandoOCR, setProcesandoOCR] = React.useState(false);
+  const [showManualMode, setShowManualMode] = React.useState(false); // MODO MANUAL: Toggle entre foto (IA) vs campos manuales
 
   // Assignment dialog state
   const [assignmentDialog, setAssignmentDialog] = React.useState({ visible: false, orden: null, nuevoEstado: null, asignado: null });
@@ -2302,6 +2304,9 @@ function ProduccionIntegradaModule({ onNavigate }) {
       setFormData(prev => ({ ...prev, foto_base64: base64, foto_orden: file.name }));
 
       try {
+        // Extraer base64 sin prefijo
+        const base64Data = base64.includes(',') ? base64.split(',')[1] : base64;
+
         // Usar Claude API con Vision para procesar la orden
         const response = await fetch(ANTHROPIC_API_URL, {
           method: 'POST',
@@ -2312,26 +2317,30 @@ function ProduccionIntegradaModule({ onNavigate }) {
           },
           body: JSON.stringify({
             model: 'claude-3-5-sonnet-20241022',
-            max_tokens: 500,
+            max_tokens: 800,
             messages: [{
               role: 'user',
               content: [
                 {
                   type: 'image',
-                  source: { type: 'base64', media_type: 'image/jpeg', data: base64.split(',')[1] }
+                  source: { type: 'base64', media_type: 'image/jpeg', data: base64Data }
                 },
                 {
                   type: 'text',
-                  text: `Lee esta orden de trabajo dental y extrae EXACTAMENTE estos campos en formato JSON:
-{
-  "folio": "ZL-XXXX o similar",
-  "doctor": "Nombre del doctor (Dr./Dra.)",
-  "paciente": "Nombre del paciente",
-  "trabajo": "Tipo de prótesis/trabajo (Corona, Puente, etc)",
-  "dientes": "Números de dientes afectados (ej: 11,12,13)"
-}
+                  text: `IMPORTANTE: Eres un asistente especializado en laboratorios dentales.
 
-Responde SOLO con el JSON, sin texto adicional.`
+Lee esta imagen de una orden de trabajo dental. Extrae los siguientes campos:
+
+1. FOLIO: Número de identificación (ej: ZL-0001)
+2. DOCTOR: Nombre del dentista (ej: Dr. García)
+3. PACIENTE: Nombre del paciente (ej: Juan Pérez)
+4. TRABAJO: Tipo de prótesis (ej: Corona Zirconia)
+5. DIENTES: Números de dientes (ej: 11, 12)
+
+Si no encuentras un campo, escribe "No especificado".
+
+Responde EXACTAMENTE en este formato JSON, sin texto adicional:
+{"folio":"valor","doctor":"valor","paciente":"valor","trabajo":"valor","dientes":"valor"}`
                 }
               ]
             }]
@@ -2339,15 +2348,44 @@ Responde SOLO con el JSON, sin texto adicional.`
         });
 
         if (!response.ok) {
-          throw new Error('Error en Claude API');
+          const errorData = await response.json();
+          console.error('Error de API:', errorData);
+          throw new Error(`API Error: ${errorData.error?.message || 'Unknown error'}`);
         }
 
         const data = await response.json();
-        const contenido = data.content[0]?.text || '{}';
+        console.log('Respuesta de Claude:', data);
 
-        // Extraer JSON de la respuesta
-        const jsonMatch = contenido.match(/\{[\s\S]*\}/);
-        const datosExtraidos = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+        const contenido = data.content?.[0]?.text || '';
+        if (!contenido) {
+          throw new Error('No content returned from Claude');
+        }
+
+        // Mejor parsing del JSON
+        let datosExtraidos = {};
+        try {
+          // Buscar JSON en la respuesta
+          const jsonMatch = contenido.match(/\{[^{}]*"folio"[^{}]*\}/s) ||
+                           contenido.match(/\{[^{}]*"doctor"[^{}]*\}/s) ||
+                           contenido.match(/\{[\s\S]*?\}/);
+
+          if (jsonMatch) {
+            datosExtraidos = JSON.parse(jsonMatch[0]);
+            console.log('Datos extraídos:', datosExtraidos);
+          } else {
+            console.warn('No se encontró JSON válido en la respuesta:', contenido);
+            throw new Error('Respuesta no contiene JSON válido');
+          }
+        } catch (parseErr) {
+          console.error('Error parseando JSON:', parseErr, 'Contenido:', contenido);
+          throw new Error(`JSON parsing error: ${parseErr.message}`);
+        }
+
+        // Validar que al menos tenemos algunos datos
+        const tieneDatos = datosExtraidos.folio || datosExtraidos.doctor || datosExtraidos.paciente || datosExtraidos.trabajo;
+        if (!tieneDatos) {
+          throw new Error('No se extrajeron datos de la imagen');
+        }
 
         setFormData(prev => ({
           ...prev,
@@ -2358,10 +2396,11 @@ Responde SOLO con el JSON, sin texto adicional.`
           dientes: datosExtraidos.dientes || prev.dientes
         }));
 
-        alert('✅ Foto procesada con IA. Campos rellenados automáticamente.');
+        alert('✅ Foto procesada con IA. Campos rellenados automáticamente.\n\nVerifica los datos antes de guardar.');
       } catch (err) {
         console.error('Error procesando foto:', err);
-        alert('⚠️ No se pudo procesar la foto. Intenta con una imagen más clara o llena los campos manualmente.');
+        const mensajeError = err.message || 'Error desconocido';
+        alert(`⚠️ Error procesando foto:\n\n${mensajeError}\n\nIntenta:\n• Con una imagen más clara de la orden\n• Asegúrate que sea legible\n• O llena los campos manualmente`);
       } finally {
         setProcesandoOCR(false);
       }
@@ -2488,9 +2527,35 @@ Responde SOLO con el JSON, sin texto adicional.`
 
       {showFormularioRecepcion && (
         <div style={{ background: 'var(--bg-card)', padding: '20px', borderRadius: 'var(--radius-lg)', border: '2px solid var(--mod-produccion)', marginBottom: '16px' }}>
-          <h3 style={{ marginBottom: '12px', color: 'var(--text-primary)' }}>📥 Registrar Nueva Orden</h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>📥 Registrar Nueva Orden</h3>
+            {/* MODO MANUAL TOGGLE */}
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <button
+                onClick={() => setShowManualMode(false)}
+                style={{
+                  padding: '8px 14px', background: !showManualMode ? 'var(--mod-produccion)' : 'var(--bg-input)',
+                  color: !showManualMode ? '#fff' : 'var(--text-secondary)', border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: '12px', fontWeight: 600
+                }}
+              >
+                📸 Con Foto (IA)
+              </button>
+              <button
+                onClick={() => setShowManualMode(true)}
+                style={{
+                  padding: '8px 14px', background: showManualMode ? 'var(--mod-produccion)' : 'var(--bg-input)',
+                  color: showManualMode ? '#fff' : 'var(--text-secondary)', border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: '12px', fontWeight: 600
+                }}
+              >
+                ✍️ Modo Manual
+              </button>
+            </div>
+          </div>
 
-          {/* Sección de Foto */}
+          {/* SECCIÓN FOTO (IA) - Solo cuando showManualMode es false */}
+          {!showManualMode && (
           <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', border: '2px dashed var(--mod-produccion)' }}>
             <label style={{ display: 'block', marginBottom: '8px', fontSize: '13px', fontWeight: 600, color: 'var(--mod-produccion)' }}>📸 Foto de Orden (IA procesará automáticamente)</label>
             <input
@@ -2515,22 +2580,25 @@ Responde SOLO con el JSON, sin texto adicional.`
               </div>
             )}
           </div>
+          )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginBottom: '12px' }}>
-            <input type="text" placeholder="Folio" value={formData.folio} onChange={(e) => setFormData({...formData, folio: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
-            <input type="text" placeholder="Doctor" value={formData.doctor} onChange={(e) => setFormData({...formData, doctor: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
-            <input type="text" placeholder="Paciente" value={formData.paciente} onChange={(e) => setFormData({...formData, paciente: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
-            <select value={formData.trabajo} onChange={(e) => setFormData({...formData, trabajo: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }}>
-              <option value="">Tipo de prótesis</option>
-              {PROTESIS_TIPOS.map(tipo => <option key={tipo.id} value={tipo.label}>{tipo.label}</option>)}
-            </select>
-            <input type="text" placeholder="Dientes" value={formData.dientes} onChange={(e) => setFormData({...formData, dientes: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
-            <select value={formData.color} onChange={(e) => setFormData({...formData, color: e.target.value})} style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }}>
-              <option value="">Color (Sombra)</option>
-              {SHADE_COLORS.map(shade => <option key={shade.code} value={shade.code}>{shade.code}</option>)}
-            </select>
-            <input type="number" placeholder="Unidades" value={formData.unidades} onChange={(e) => setFormData({...formData, unidades: parseInt(e.target.value)})} min="1" style={{ padding: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+          {/* SECCIÓN MODO MANUAL - Solo cuando showManualMode es true */}
+          {showManualMode && (
+          <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', border: '2px dashed var(--mod-produccion)' }}>
+            <label style={{ display: 'block', marginBottom: '12px', fontSize: '13px', fontWeight: 600, color: 'var(--mod-produccion)' }}>✍️ Ingresa los datos manualmente</label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px' }}>
+              <input type="text" placeholder="Folio" value={formData.folio} onChange={(e) => setFormData({...formData, folio: e.target.value})} style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+              <input type="text" placeholder="Doctor" value={formData.doctor} onChange={(e) => setFormData({...formData, doctor: e.target.value})} style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+              <input type="text" placeholder="Paciente" value={formData.paciente} onChange={(e) => setFormData({...formData, paciente: e.target.value})} style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+              <select value={formData.trabajo} onChange={(e) => setFormData({...formData, trabajo: e.target.value})} style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }}>
+                <option value="">Tipo de prótesis</option>
+                {PROTESIS_TIPOS.map(tipo => <option key={tipo.id} value={tipo.label}>{tipo.label}</option>)}
+              </select>
+              <input type="text" placeholder="Dientes (ej: 11, 12, 21)" value={formData.dientes} onChange={(e) => setFormData({...formData, dientes: e.target.value})} style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+              <input type="number" placeholder="Unidades" value={formData.unidades} onChange={(e) => setFormData({...formData, unidades: parseInt(e.target.value)})} min="1" style={{ padding: '10px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff' }} />
+            </div>
           </div>
+          )}
           <div style={{ display: 'flex', gap: '8px' }}>
             <button onClick={handleAgregarOrden} style={{ padding: '10px 16px', background: 'var(--success)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600, flex: 1 }}>✅ Guardar</button>
             <button onClick={() => setShowFormularioRecepcion(false)} style={{ padding: '10px 16px', background: 'var(--bg-card-hover)', color: '#fff', border: '1px solid var(--border-medium)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600 }}>✕</button>
