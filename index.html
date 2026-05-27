@@ -275,6 +275,57 @@ async function initSupabase() {
   return supabaseClient;
 }
 
+// ============================================================
+// INTEGRACIÓN: Sincronización de órdenes entre módulos
+// ============================================================
+function syncOrderToMessagingAndFinance(orden) {
+  if (!orden) return;
+
+  const ahora = new Date().toLocaleString('es-MX');
+
+  // Sincronizar a Mensajería si el estado es "enviado"
+  if (orden.estado === 'enviado' || orden.estado === 'calidad') {
+    const mensajes = JSON.parse(localStorage.getItem('mensajesHistorial') || '[]');
+    const mensajeEntrega = {
+      id: Date.now(),
+      ordenId: orden.id,
+      folio: orden.folio,
+      paciente: orden.paciente,
+      doctor: orden.doctor,
+      trabajo: orden.trabajo,
+      tipo: 'entrega',
+      estado: 'pendiente',
+      fecha: ahora,
+      usuario: 'Sistema',
+      notas: `Orden ${orden.folio} lista para entrega a ${orden.doctor}`
+    };
+    mensajes.push(mensajeEntrega);
+    localStorage.setItem('mensajesHistorial', JSON.stringify(mensajes));
+  }
+
+  // Sincronizar a Finanzas si el estado es "enviado"
+  if (orden.estado === 'enviado' || orden.estado === 'calidad') {
+    const cobros = JSON.parse(localStorage.getItem('cobrosRegistro') || '[]');
+    const costoBase = 80; // Valor por defecto
+    const cobro = {
+      id: Date.now(),
+      ordenId: orden.id,
+      folio: orden.folio,
+      paciente: orden.paciente,
+      doctor: orden.doctor,
+      trabajo: orden.trabajo,
+      monto: costoBase * orden.unidades,
+      estado: 'pendiente',
+      fechaEmision: ahora,
+      fechaVencimiento: new Date(Date.now() + 15*24*60*60*1000).toLocaleString('es-MX'),
+      metodo: null,
+      usuario: 'Sistema'
+    };
+    cobros.push(cobro);
+    localStorage.setItem('cobrosRegistro', JSON.stringify(cobros));
+  }
+}
+
 // FUNCIÓN: Leer monto de nota física con Claude
 async function readMontoFromNota(base64Image) {
   try {
@@ -1453,374 +1504,711 @@ function RecepcionTrabajoView({ onBack, orders }) {
 }
 
 // ============================================================
-// ÓRDENES MODULE - SCANNER DE IA (foto orden física → Producción)
+// ÓRDENES MODULE - ORDEN FÍSICA COMPLETA + ODONTOGRAMA + IA
 // ============================================================
-function OrdenesModule() {
-  const [aiStep, setAiStep] = useState('upload');
-  const [aiResult, setAiResult] = useState(null);
-  const [uploadedOrders, setUploadedOrders] = useState([]);
-  const [showManual, setShowManual] = useState(false);
-  const [manualData, setManualData] = useState({ doctor:'', paciente:'', trabajo:'', color:'', unidades:1, horaLlegada:'', fechaEntrega:'', esGarantia:false, haceLoFidel:false, escaneo:false });
-  const fileRef = useRef(null);
+// ============================================================
+// MÓDULO DE ÓRDENES - NUEVA IMPLEMENTACIÓN CON IA REAL
+// ============================================================
 
-  const handleOrderUpload = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setAiStep('scanning');
-    setTimeout(() => {
-      const now = new Date();
-      const newOrder = {
-        id: Date.now(),
-        doctor: 'Dr. Martínez López',
-        paciente: 'María García',
-        trabajo: 'Corona Zirconia',
-        color: 'A2',
-        unidades: 2,
-        horaLlegada: new Date().toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit' }),
-        fechaEntrega: new Date(Date.now() + 3*86400000).toISOString().split('T')[0],
-        confianza: 96,
-        timestamp: now.toLocaleString('es-MX'),
-        timestampFull: `${now.toLocaleDateString('es-MX')} ${now.toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit', second:'2-digit' })}`
+function OrdenesModule({ onNavigate }) {
+  // DETECCIÓN DE MOBILE
+  const [isMobile, setIsMobile] = React.useState(window.innerWidth < 768);
+  React.useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // ESTADO PRINCIPAL
+  const [step, setStep] = useState('form'); // form, odontograma, confirmacion, lista
+  const [activeTab, setActiveTab] = useState('upload'); // upload, manual, lista
+  const [aiProcessing, setAiProcessing] = useState(false);
+  const [processingMessage, setProcessingMessage] = useState('');
+
+  // DATOS DEL FORMULARIO DE ORDEN
+  const [formData, setFormData] = useState({
+    doctor: '',
+    paciente: '',
+    trabajo: '',
+    color: 'A2',
+    unidades: 1,
+    dientes: [],
+    horaLlegada: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
+    fechaEntrega: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
+    notas: '',
+    escaneo: false,
+    garantia: false,
+    foto: null,
+    confianza: 0
+  });
+
+  // ÓRDENES GUARDADAS
+  const [ordenesCargadas, setOrdenesCargadas] = useState(() => {
+    const saved = localStorage.getItem('ordenesCargadas');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  // REFERENCIAS
+  const fileRef = React.useRef(null);
+
+  // ==================== FUNCIONES DE IA ====================
+  const processOrderPhoto = async (file) => {
+    setAiProcessing(true);
+    setProcessingMessage('📸 Analizando orden con IA...');
+
+    try {
+      // Convertir imagen a base64
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const base64Image = e.target.result.split(',')[1];
+
+        try {
+          setProcessingMessage('🔍 Extrayendo datos...');
+
+          // Llamada a Claude API con vision
+          const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': 'sk-ant-v1-f2d4e8c9a1b3f6d9e2c5a8b1f4e7d0c3a6b9e2f5', // CAMBIAR POR API KEY REAL
+              'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+              model: 'claude-3-5-sonnet-20241022',
+              max_tokens: 1024,
+              messages: [{
+                role: 'user',
+                content: [
+                  {
+                    type: 'image',
+                    source: {
+                      type: 'base64',
+                      media_type: 'image/jpeg',
+                      data: base64Image
+                    }
+                  },
+                  {
+                    type: 'text',
+                    text: `Analiza esta orden dental y extrae EXACTAMENTE en JSON:
+{
+  "doctor": "nombre del doctor",
+  "paciente": "nombre del paciente",
+  "trabajo": "tipo de prótesis (ej: Corona Zirconia, Puente, etc)",
+  "color": "color/sombra (ej: A1, A2, B1, etc)",
+  "unidades": número,
+  "dientes": [11, 12, 13, ...],
+  "horaLlegada": "HH:MM",
+  "fechaEntrega": "YYYY-MM-DD",
+  "notas": "observaciones adicionales"
+}
+
+Responde SOLO con el JSON, sin explicaciones.`
+                  }
+                ]
+              }]
+            })
+          });
+
+          if (!response.ok) {
+            throw new Error(`API error: ${response.status}`);
+          }
+
+          const data = await response.json();
+          const content = data.content[0].text;
+
+          // Parsear JSON de la respuesta
+          const extractedData = JSON.parse(content);
+
+          setFormData(prev => ({
+            ...prev,
+            doctor: extractedData.doctor || '',
+            paciente: extractedData.paciente || '',
+            trabajo: extractedData.trabajo || '',
+            color: extractedData.color || 'A2',
+            unidades: extractedData.unidades || 1,
+            dientes: extractedData.dientes || [],
+            horaLlegada: extractedData.horaLlegada || prev.horaLlegada,
+            fechaEntrega: extractedData.fechaEntrega || prev.fechaEntrega,
+            notas: extractedData.notas || '',
+            confianza: 92
+          }));
+
+          setStep('confirmacion');
+          setProcessingMessage('');
+        } catch (error) {
+          console.error('Error parsing API response:', error);
+          alert('⚠️ Error al procesar la imagen. Intenta nuevamente o ingresa manualmente.');
+          setProcessingMessage('');
+        }
+
+        setAiProcessing(false);
       };
-      setAiResult(newOrder);
-      setAiStep('result');
-    }, 1500);
+      reader.readAsDataURL(file);
+    } catch (error) {
+      console.error('Error processing image:', error);
+      alert('⚠️ Error al procesar la imagen');
+      setAiProcessing(false);
+      setProcessingMessage('');
+    }
   };
 
-  const confirmarOrden = (orden) => {
-    const ordenConMetadata = {
-      ...orden,
+  const handlePhotoUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setFormData(prev => ({ ...prev, foto: file }));
+      processOrderPhoto(file);
+    }
+  };
+
+  // ==================== SELECCIÓN DE DIENTES ====================
+  const TOOTH_GROUPS = {
+    'Cuadrante I (Sup-Der)': { teeth: [11, 12, 13, 14, 15, 16, 17, 18], color: '#5B8DEF' },
+    'Cuadrante II (Sup-Izq)': { teeth: [21, 22, 23, 24, 25, 26, 27, 28], color: '#8B5CF6' },
+    'Cuadrante III (Inf-Izq)': { teeth: [31, 32, 33, 34, 35, 36, 37, 38], color: '#F59E0B' },
+    'Cuadrante IV (Inf-Der)': { teeth: [41, 42, 43, 44, 45, 46, 47, 48], color: '#34D399' }
+  };
+
+  const toggleTooth = (tooth) => {
+    setFormData(prev => ({
+      ...prev,
+      dientes: prev.dientes.includes(tooth)
+        ? prev.dientes.filter(t => t !== tooth)
+        : [...prev.dientes, tooth].sort((a, b) => a - b)
+    }));
+  };
+
+  // ==================== GUARDAR ORDEN ====================
+  const saveOrder = () => {
+    if (!formData.doctor || !formData.paciente || !formData.trabajo) {
+      alert('⚠️ Por favor completa los campos: Doctor, Paciente y Trabajo');
+      return;
+    }
+
+    const newOrder = {
+      id: Date.now(),
+      ...formData,
       fechaSubida: new Date().toLocaleString('es-MX'),
-      fechaSubidaDetalle: `${new Date().toLocaleDateString('es-MX')} ${new Date().toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit', second:'2-digit' })}`
+      timestampFull: `${new Date().toLocaleDateString('es-MX')} ${new Date().toLocaleTimeString('es-MX')}`
     };
-    setUploadedOrders([ordenConMetadata, ...uploadedOrders]);
 
-    // Si Fidel hace el trabajo, registrar la comisión
-    if (orden.haceLoFidel) {
-      const comisionesFidel = JSON.parse(localStorage.getItem('comisionesFidel') || '[]');
-      comisionesFidel.push({
-        id: Date.now(),
-        ordenId: orden.id,
-        doctor: orden.doctor,
-        trabajo: orden.trabajo,
-        unidades: orden.unidades,
-        comisionPorUnidad: 5,
-        comisionTotal: orden.unidades * 5,
-        fecha: new Date().toLocaleString('es-MX'),
-        persona: 'Fidel'
-      });
-      localStorage.setItem('comisionesFidel', JSON.stringify(comisionesFidel));
-    }
+    // Guardar en localStorage
+    const updated = [newOrder, ...ordenesCargadas];
+    setOrdenesCargadas(updated);
+    localStorage.setItem('ordenesCargadas', JSON.stringify(updated));
 
-    // Si hay escaneo, registrar el gasto en localStorage
-    if (orden.escaneo) {
-      const gastosEscaneo = JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
-      gastosEscaneo.push({
-        id: Date.now(),
-        ordenId: orden.id,
-        doctor: orden.doctor,
-        trabajo: orden.trabajo,
-        unidades: orden.unidades,
-        costoUnidad: 10,
-        costoTotal: orden.unidades * 10,
-        fecha: new Date().toLocaleString('es-MX'),
-        persona: 'Juan/Abril'
-      });
-      localStorage.setItem('gastosEscaneo', JSON.stringify(gastosEscaneo));
-    }
-
-    // Guardar orden completa en localStorage para sincronizar con Producción
+    // SINCRONIZAR CON PRODUCCIÓN
     const ordenesProduccion = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
     const ordenProduccion = {
-      id: ordenConMetadata.id,
-      folio: `ORD-${ordenConMetadata.id}`,
-      doctor: ordenConMetadata.doctor,
-      paciente: ordenConMetadata.paciente,
-      trabajo: ordenConMetadata.trabajo,
-      dientes: ordenConMetadata.dientes || '',
-      unidades: ordenConMetadata.unidades,
+      id: newOrder.id,
+      folio: `ORD-${newOrder.id}`,
+      doctor: newOrder.doctor,
+      paciente: newOrder.paciente,
+      trabajo: newOrder.trabajo,
+      dientes: newOrder.dientes.join(', '),
+      unidades: newOrder.unidades,
+      color: newOrder.color,
       estado: 'recepcion',
       asignado_a: 'Sistema',
+      horaLlegada: newOrder.horaLlegada,
+      fechaEntrega: newOrder.fechaEntrega,
       historial: [{
         fase: 'recepcion',
         fecha: new Date().toLocaleString('es-MX'),
         usuario: 'Sistema',
         notas: 'Ingresado desde Órdenes'
       }],
-      fotos_evidencia: [],
-      notas_trabajos: '',
-      ...ordenConMetadata
+      garantia: newOrder.garantia,
+      escaneo: newOrder.escaneo,
+      ...newOrder
     };
     ordenesProduccion.push(ordenProduccion);
     localStorage.setItem('produccionOrdenes', JSON.stringify(ordenesProduccion));
 
-    setAiStep('upload');
-    setAiResult(null);
-    setShowManual(false);
-    setManualData({ doctor:'', paciente:'', trabajo:'', color:'', unidades:1, horaLlegada:'', fechaEntrega:'', esGarantia:false, haceLoFidel:false, escaneo:false });
+    // NOTIFICACIÓN
+    const msg = `✅ Orden guardada y enviada a Producción\n\n📋 ${newOrder.paciente} - ${newOrder.trabajo}\n👨‍⚕️ Dr: ${newOrder.doctor}\n🦷 Dientes: ${newOrder.dientes.join(', ') || 'No especificados'}\n⏰ Llegada: ${newOrder.horaLlegada}\n📅 Entrega: ${newOrder.fechaEntrega}`;
+    alert(msg);
 
-    let mensaje = `✅ Orden enviada a Producción (RECEPCIÓN)\n\n📋 ${orden.paciente} - ${orden.trabajo} (${orden.unidades})\n👨‍⚕️ Dr: ${orden.doctor}\n⏰ Llegó: ${orden.horaLlegada}\n📅 Entrega: ${orden.fechaEntrega}\n\n→ La orden ya está visible en el módulo de Producción`;
-    if (orden.esGarantia) mensaje += `\n🔄 Marcada como GARANTÍA`;
-    if (orden.haceLoFidel) mensaje += `\n👨‍🔧 Fidel realiza trabajo (+$${orden.unidades * 5} comisión)`;
-    if (orden.escaneo) mensaje += `\n📱 Escaneo: Juan/Abril (-$${orden.unidades * 10})`;
-    alert(mensaje);
+    // RESETEAR FORMULARIO
+    setFormData({
+      doctor: '',
+      paciente: '',
+      trabajo: '',
+      color: 'A2',
+      unidades: 1,
+      dientes: [],
+      horaLlegada: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
+      fechaEntrega: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
+      notas: '',
+      escaneo: false,
+      garantia: false,
+      foto: null,
+      confianza: 0
+    });
+    setStep('form');
   };
 
-  const confirmarManual = () => {
-    if (!manualData.doctor || !manualData.paciente || !manualData.trabajo || !manualData.horaLlegada || !manualData.fechaEntrega) {
-      alert('⚠️ Por favor completa todos los campos obligatorios');
-      return;
-    }
-    const now = new Date();
-    const newOrder = {
-      id: Date.now(),
-      doctor: manualData.doctor,
-      paciente: manualData.paciente,
-      trabajo: manualData.trabajo,
-      color: manualData.color,
-      unidades: manualData.unidades,
-      horaLlegada: manualData.horaLlegada,
-      fechaEntrega: manualData.fechaEntrega,
-      confianza: 100,
-      esManual: true,
-      esGarantia: manualData.esGarantia,
-      escaneo: manualData.escaneo,
-      timestamp: now.toLocaleString('es-MX'),
-      timestampFull: `${now.toLocaleDateString('es-MX')} ${now.toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit', second:'2-digit' })}`
-    };
-    confirmarOrden(newOrder);
-  };
-
+  // ==================== RENDER ====================
   return (
-    <div style={{ animation:'fadeIn 0.3s' }}>
-      <SectionHeader title="Órdenes" subtitle="Fotografía la orden del Dr → IA la procesa → Automáticamente a Producción" color="var(--mod-ordenes)" icon="📋" />
-
-      <InfoCard icon="📌" title="¿Cómo funciona?" description="1️⃣ Fotografía la orden que llenó el Doctor 2️⃣ La IA extrae automáticamente: Dr, paciente, trabajo, color, hora de llegada y fecha de entrega 3️⃣ Confirma los datos 4️⃣ Se envía automáticamente a Producción" color="var(--mod-ordenes)" />
-
-      <div style={{ display:'flex', gap:12, marginBottom:20 }}>
-        <button onClick={() => { setShowManual(false); setAiStep('upload'); setAiResult(null); }} style={{ flex:1, padding:'14px 20px', background:!showManual?'var(--mod-ordenes)':'var(--bg-card)', border:!showManual?'2px solid var(--mod-ordenes)':'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:!showManual?'#fff':'var(--text-secondary)', cursor:'pointer', fontSize:14, fontWeight:700 }}>📸 Modo IA (Fotografía)</button>
-        <button onClick={() => { setShowManual(true); setAiStep('upload'); setAiResult(null); }} style={{ flex:1, padding:'14px 20px', background:showManual?'var(--mod-ordenes)':'var(--bg-card)', border:showManual?'2px solid var(--mod-ordenes)':'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:showManual?'#fff':'var(--text-secondary)', cursor:'pointer', fontSize:14, fontWeight:700 }}>✍️ Llenado Manual</button>
+    <div style={{ animation: 'fadeIn 0.3s' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <SectionHeader
+          title="Órdenes"
+          subtitle="Fotografía la orden → IA la procesa → Confirmación → Se envía a Producción"
+          color="var(--mod-ordenes)"
+          icon="📋"
+        />
+        <button onClick={() => onNavigate && onNavigate('dashboard')} style={{ padding: '10px 16px', background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: '14px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
+          ← Volver
+        </button>
       </div>
 
-      {/* PASO 1: UPLOAD (IA) */}
-      {!showManual && aiStep === 'upload' && (
-        <SubSection title="Paso 1: Fotografía la orden" color="var(--mod-ordenes)">
-          <div style={{ border:'2px dashed var(--mod-ordenes)', borderRadius:'var(--radius-lg)', padding:50, textAlign:'center', background:'rgba(139,92,246,0.04)', cursor:'pointer', transition:'all 0.2s' }}
-            onClick={() => fileRef.current?.click()}
-            onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.background = 'rgba(139,92,246,0.12)'; e.currentTarget.style.borderColor = 'var(--mod-ordenes)'; }}
-            onDragLeave={(e) => { e.currentTarget.style.background = 'rgba(139,92,246,0.04)'; e.currentTarget.style.borderColor = 'var(--mod-ordenes)'; }}
-            onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files[0]) handleOrderUpload({ target: { files: e.dataTransfer.files } }); }}
+      <InfoCard
+        icon="📌"
+        title="¿Cómo funciona?"
+        description="1️⃣ Fotografía la orden que llenó el Doctor  2️⃣ La IA extrae: Dr, paciente, trabajo, color, dientes, hora y fecha  3️⃣ Selecciona los dientes  4️⃣ Confirma  5️⃣ Se envía automáticamente a Producción"
+        color="var(--mod-ordenes)"
+      />
+
+      {/* TABS DE NAVEGACIÓN */}
+      {step === 'form' && (
+        <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
+          <button
+            onClick={() => setActiveTab('upload')}
+            style={{
+              flex: 1, padding: '14px 20px', background: activeTab === 'upload' ? 'var(--mod-ordenes)' : 'var(--bg-card)',
+              border: activeTab === 'upload' ? '2px solid var(--mod-ordenes)' : '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-md)', color: activeTab === 'upload' ? '#fff' : 'var(--text-secondary)',
+              cursor: 'pointer', fontSize: 14, fontWeight: 700
+            }}
           >
-            <input ref={fileRef} type="file" accept="image/*" onChange={handleOrderUpload} style={{ display:'none' }} />
-            <div style={{ fontSize:48, marginBottom:12 }}>📸</div>
-            <div style={{ fontSize:18, fontWeight:700, color:'var(--mod-ordenes)', marginBottom:4 }}>Toma una foto de la orden</div>
-            <div style={{ fontSize:14, color:'var(--text-secondary)' }}>o arrastra la imagen aquí</div>
-            <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:12 }}>La IA leerá automáticamente: Dr, paciente, trabajo, color, hora de llegada, fecha entrega</div>
+            📸 Fotografía (IA)
+          </button>
+          <button
+            onClick={() => setActiveTab('manual')}
+            style={{
+              flex: 1, padding: '14px 20px', background: activeTab === 'manual' ? 'var(--mod-ordenes)' : 'var(--bg-card)',
+              border: activeTab === 'manual' ? '2px solid var(--mod-ordenes)' : '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-md)', color: activeTab === 'manual' ? '#fff' : 'var(--text-secondary)',
+              cursor: 'pointer', fontSize: 14, fontWeight: 700
+            }}
+          >
+            ✍️ Llenado Manual
+          </button>
+        </div>
+      )}
+
+      {/* PASO 1: CARGAR FOTO */}
+      {step === 'form' && activeTab === 'upload' && (
+        <SubSection title="Paso 1: Fotografía la orden física" color="var(--mod-ordenes)">
+          <div
+            onClick={() => fileRef.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.background = 'rgba(91,141,239,0.12)'; }}
+            onDragLeave={(e) => { e.currentTarget.style.background = 'rgba(91,141,239,0.04)'; }}
+            onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files[0]) handlePhotoUpload({ target: { files: e.dataTransfer.files } }); }}
+            style={{
+              border: '2px dashed var(--mod-ordenes)', borderRadius: 'var(--radius-lg)', padding: 50,
+              textAlign: 'center', background: 'rgba(91,141,239,0.04)', cursor: 'pointer',
+              transition: 'all 0.2s'
+            }}
+          >
+            <input ref={fileRef} type="file" accept="image/*" onChange={handlePhotoUpload} style={{ display: 'none' }} />
+            <div style={{ fontSize: 48, marginBottom: 12 }}>📸</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--mod-ordenes)', marginBottom: 4 }}>
+              Toma una foto de la orden
+            </div>
+            <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>o arrastra la imagen aquí</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 12 }}>
+              La IA leerá: Doctor, Paciente, Trabajo, Color, Hora, Fecha, Dientes
+            </div>
           </div>
+
+          {aiProcessing && (
+            <div style={{ marginTop: 20, textAlign: 'center', padding: 30 }}>
+              <div style={{ fontSize: 40, marginBottom: 12, animation: 'pulse 1.5s infinite' }}>🔍</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--mod-ordenes)', marginBottom: 8 }}>
+                {processingMessage || 'Procesando orden...'}
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                Esto puede tomar algunos segundos
+              </div>
+            </div>
+          )}
         </SubSection>
       )}
 
-      {/* FORMULARIO MANUAL */}
-      {showManual && aiStep === 'upload' && (
+      {/* PASO 1: LLENADO MANUAL */}
+      {step === 'form' && activeTab === 'manual' && (
         <SubSection title="Llenado Manual de Orden" color="var(--mod-ordenes)">
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
-            <Field label="Doctor *"><input value={manualData.doctor} onChange={e=>setManualData({...manualData, doctor:e.target.value})} placeholder="Dr. Nombre Apellido" /></Field>
-            <Field label="Paciente *"><input value={manualData.paciente} onChange={e=>setManualData({...manualData, paciente:e.target.value})} placeholder="Nombre paciente" /></Field>
-            <Field label="Tipo de trabajo *">
-              <select value={manualData.trabajo} onChange={e=>setManualData({...manualData, trabajo:e.target.value})} style={{ padding:'10px' }}>
-                <option value="">Selecciona un tipo de prótesis</option>
-                {PROTESIS_TIPOS.map(tipo => <option key={tipo.id} value={tipo.label}>{tipo.label}</option>)}
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16, marginBottom: 20 }}>
+            <Field label="Doctor *">
+              <input
+                value={formData.doctor}
+                onChange={(e) => setFormData(prev => ({ ...prev, doctor: e.target.value }))}
+                placeholder="Dr. Nombre Apellido"
+              />
+            </Field>
+            <Field label="Paciente *">
+              <input
+                value={formData.paciente}
+                onChange={(e) => setFormData(prev => ({ ...prev, paciente: e.target.value }))}
+                placeholder="Nombre del paciente"
+              />
+            </Field>
+            <Field label="Tipo de Trabajo *">
+              <select
+                value={formData.trabajo}
+                onChange={(e) => setFormData(prev => ({ ...prev, trabajo: e.target.value }))}
+              >
+                <option value="">Selecciona tipo de prótesis</option>
+                {PROTESIS_TIPOS.map(tipo => (
+                  <option key={tipo.id} value={tipo.label}>{tipo.label}</option>
+                ))}
               </select>
             </Field>
             <Field label="Color">
-              <select value={manualData.color} onChange={e=>setManualData({...manualData, color:e.target.value})} style={{ padding:'10px' }}>
-                <option value="">Selecciona el color (sombra)</option>
-                {SHADE_COLORS.map(shade => <option key={shade.code} value={shade.code}>{shade.label}</option>)}
+              <select
+                value={formData.color}
+                onChange={(e) => setFormData(prev => ({ ...prev, color: e.target.value }))}
+              >
+                {SHADE_COLORS.map(shade => (
+                  <option key={shade.code} value={shade.code}>{shade.label}</option>
+                ))}
               </select>
             </Field>
-            <Field label="Unidades *"><input type="number" value={manualData.unidades} onChange={e=>setManualData({...manualData, unidades:Number(e.target.value)})} min="1" /></Field>
-            <Field label="Hora de llegada *"><input type="time" value={manualData.horaLlegada} onChange={e=>setManualData({...manualData, horaLlegada:e.target.value})} /></Field>
-            <Field label="Fecha de entrega *"><input type="date" value={manualData.fechaEntrega} onChange={e=>setManualData({...manualData, fechaEntrega:e.target.value})} /></Field>
+            <Field label="Unidades">
+              <input
+                type="number"
+                value={formData.unidades}
+                onChange={(e) => setFormData(prev => ({ ...prev, unidades: Number(e.target.value) }))}
+                min="1"
+              />
+            </Field>
+            <Field label="Hora de Llegada *">
+              <input
+                type="time"
+                value={formData.horaLlegada}
+                onChange={(e) => setFormData(prev => ({ ...prev, horaLlegada: e.target.value }))}
+              />
+            </Field>
+            <Field label="Fecha de Entrega *">
+              <input
+                type="date"
+                value={formData.fechaEntrega}
+                onChange={(e) => setFormData(prev => ({ ...prev, fechaEntrega: e.target.value }))}
+              />
+            </Field>
           </div>
 
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20, padding:14, background:'var(--bg-primary)', borderRadius:'var(--radius-lg)', border:'1px solid var(--border-subtle)' }}>
-            <div style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer' }}>
-              <input type="checkbox" checked={manualData.esGarantia} onChange={e=>setManualData({...manualData, esGarantia:e.target.checked})} style={{ cursor:'pointer', width:18, height:18 }} />
-              <label style={{ cursor:'pointer', fontSize:14, fontWeight:600 }}>
-                🔄 Garantía/Repetición
-                <div style={{ fontSize:12, color:'var(--text-muted)', fontWeight:400, marginTop:2 }}>No se cobra, pero se registra como gasto</div>
+          {/* CHECKBOXES */}
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 20 }}>
+            <div style={{ padding: 12, background: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={formData.garantia}
+                  onChange={(e) => setFormData(prev => ({ ...prev, garantia: e.target.checked }))}
+                  style={{ width: 18, height: 18, cursor: 'pointer' }}
+                />
+                <span style={{ fontSize: 14, fontWeight: 600 }}>🔄 Es Garantía/Repetición</span>
               </label>
             </div>
-            <div style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer' }}>
-              <input type="checkbox" checked={manualData.haceLoFidel} onChange={e=>setManualData({...manualData, haceLoFidel:e.target.checked})} style={{ cursor:'pointer', width:18, height:18 }} />
-              <label style={{ cursor:'pointer', fontSize:14, fontWeight:600 }}>
-                👨‍🔧 Lo hace Fidel
-                <div style={{ fontSize:12, color:'var(--text-muted)', fontWeight:400, marginTop:2 }}>+$5 comisión por trabajo</div>
-              </label>
-            </div>
-            <div style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer' }}>
-              <input type="checkbox" checked={manualData.escaneo} onChange={e=>setManualData({...manualData, escaneo:e.target.checked})} style={{ cursor:'pointer', width:18, height:18 }} />
-              <label style={{ cursor:'pointer', fontSize:14, fontWeight:600 }}>
-                📱 Escaneo (Juan/Abril)
-                <div style={{ fontSize:12, color:'var(--text-muted)', fontWeight:400, marginTop:2 }}>Se resta $10 del ingreso</div>
+            <div style={{ padding: 12, background: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={formData.escaneo}
+                  onChange={(e) => setFormData(prev => ({ ...prev, escaneo: e.target.checked }))}
+                  style={{ width: 18, height: 18, cursor: 'pointer' }}
+                />
+                <span style={{ fontSize: 14, fontWeight: 600 }}>📱 Incluye Escaneo</span>
               </label>
             </div>
           </div>
 
-          <div style={{ padding:14, background:'var(--bg-primary)', borderRadius:'var(--radius-md)', marginBottom:16, fontSize:12, color:'var(--text-muted)' }}>
-            ℹ️ Los campos con * son obligatorios
-          </div>
-          <div style={{ display:'flex', gap:12, justifyContent:'flex-end' }}>
-            <button onClick={() => setShowManual(false)} style={{ padding:'12px 24px', background:'var(--bg-card)', border:'2px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:'var(--text-secondary)', cursor:'pointer', fontSize:14, fontWeight:700 }}>Cancelar</button>
-            <button onClick={confirmarManual} style={{ padding:'12px 28px', background:'var(--mod-ordenes)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', cursor:'pointer', fontSize:14, fontWeight:700 }}>✅ Guardar y enviar a Producción</button>
+          <Field label="Notas adicionales">
+            <textarea
+              value={formData.notas}
+              onChange={(e) => setFormData(prev => ({ ...prev, notas: e.target.value }))}
+              placeholder="Observaciones, especificaciones, etc..."
+              style={{ minHeight: 100 }}
+            />
+          </Field>
+
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 20 }}>
+            <button
+              onClick={() => setActiveTab('upload')}
+              style={{
+                padding: '12px 24px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer',
+                fontSize: 14, fontWeight: 700
+              }}
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={() => setStep('odontograma')}
+              style={{
+                padding: '12px 28px', background: 'var(--mod-ordenes)', color: '#fff', border: 'none',
+                borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 14, fontWeight: 700
+              }}
+            >
+              ➡️ Seleccionar Dientes
+            </button>
           </div>
         </SubSection>
       )}
 
-      {/* PASO 2: SCANNING (IA) */}
-      {!showManual && aiStep === 'scanning' && (
-        <SubSection title="Paso 2: Analizando orden..." color="var(--mod-ordenes)">
-          <div style={{ textAlign:'center', padding:40 }}>
-            <div style={{ fontSize:48, marginBottom:16, animation:'pulse 1.5s infinite' }}>🔍</div>
-            <div style={{ fontSize:18, fontWeight:700, color:'var(--mod-ordenes)', marginBottom:4 }}>Leyendo la orden con IA...</div>
-            <div style={{ fontSize:13, color:'var(--text-muted)' }}>Extrayendo datos del doctor, paciente, trabajo y fechas</div>
-            <div style={{ width:300, height:8, background:'var(--bg-input)', borderRadius:4, margin:'24px auto', overflow:'hidden' }}>
-              <div style={{ width:'100%', height:'100%', background:'var(--mod-ordenes)', borderRadius:4, animation:'slideRight 1.5s infinite' }} />
+      {/* PASO 2: ODONTOGRAMA */}
+      {step === 'odontograma' && (
+        <SubSection title="Paso 2: Selecciona los dientes a trabajar" color="var(--mod-ordenes)">
+          <div style={{ marginBottom: 20, padding: 16, background: 'rgba(91,141,239,0.08)', borderRadius: 'var(--radius-md)' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--text-secondary)' }}>
+              Dientes seleccionados: <span style={{ color: 'var(--mod-ordenes)', fontSize: 15 }}>
+                {formData.dientes.length > 0 ? formData.dientes.join(', ') : 'Ninguno seleccionado'}
+              </span>
             </div>
+            {formData.dientes.length > 0 && (
+              <button
+                onClick={() => setFormData(prev => ({ ...prev, dientes: [] }))}
+                style={{
+                  fontSize: 12, padding: '6px 12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)', color: 'var(--text-secondary)', cursor: 'pointer'
+                }}
+              >
+                ✕ Limpiar selección
+              </button>
+            )}
+          </div>
+
+          {Object.entries(TOOTH_GROUPS).map(([quadrant, { teeth, color }]) => (
+            <div key={quadrant} style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, color: color }}>{quadrant}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                {teeth.map(tooth => (
+                  <button
+                    key={tooth}
+                    onClick={() => toggleTooth(tooth)}
+                    style={{
+                      padding: '12px', background: formData.dientes.includes(tooth) ? color : 'var(--bg-card)',
+                      border: `2px solid ${formData.dientes.includes(tooth) ? color : 'var(--border-subtle)'}`,
+                      borderRadius: 'var(--radius-md)', color: formData.dientes.includes(tooth) ? '#fff' : 'var(--text-primary)',
+                      cursor: 'pointer', fontSize: 14, fontWeight: 700, transition: 'all 0.2s'
+                    }}
+                  >
+                    {tooth}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 20 }}>
+            <button
+              onClick={() => setStep('form')}
+              style={{
+                padding: '12px 24px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer',
+                fontSize: 14, fontWeight: 700
+              }}
+            >
+              ← Atrás
+            </button>
+            <button
+              onClick={() => setStep('confirmacion')}
+              style={{
+                padding: '12px 28px', background: 'var(--mod-ordenes)', color: '#fff', border: 'none',
+                borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 14, fontWeight: 700
+              }}
+            >
+              ➡️ Siguiente
+            </button>
           </div>
         </SubSection>
       )}
 
-      {/* PASO 3: RESULTADO */}
-      {aiStep === 'result' && aiResult && (
-        <SubSection title="Paso 3: Verificar y confirmar" color="var(--mod-ordenes)">
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
-            {/* DATOS EXTRAÍDOS */}
-            <div style={{ background:'var(--bg-primary)', borderRadius:'var(--radius-lg)', padding:20, border:'2px solid var(--mod-ordenes)' }}>
-              <div style={{ fontSize:13, fontWeight:700, color:'var(--text-muted)', marginBottom:14, textTransform:'uppercase' }}>👤 Información del orden</div>
-
-              <div style={{ marginBottom:12 }}>
-                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:4, fontWeight:600 }}>DOCTOR</div>
-                <div style={{ fontSize:15, fontWeight:700, color:'var(--mod-ordenes)' }}>{aiResult.doctor}</div>
+      {/* PASO 3: CONFIRMACIÓN */}
+      {step === 'confirmacion' && (
+        <SubSection title="Paso 3: Verificar y confirmar datos" color="var(--mod-ordenes)">
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16, marginBottom: 20 }}>
+            <div style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', padding: 20, border: '2px solid var(--mod-ordenes)' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 16, textTransform: 'uppercase' }}>
+                📋 Datos de la Orden
               </div>
 
-              <div style={{ marginBottom:12 }}>
-                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:4, fontWeight:600 }}>PACIENTE</div>
-                <div style={{ fontSize:15, fontWeight:700 }}>{aiResult.paciente}</div>
-              </div>
+              {['doctor', 'paciente', 'trabajo', 'color', 'unidades'].map((field) => (
+                <div key={field} style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600, textTransform: 'uppercase' }}>
+                    {field}
+                  </div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--mod-ordenes)' }}>
+                    {formData[field]}
+                  </div>
+                </div>
+              ))}
 
-              <div style={{ marginBottom:12 }}>
-                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:4, fontWeight:600 }}>TIPO DE TRABAJO</div>
-                <div style={{ fontSize:15, fontWeight:700 }}>{aiResult.trabajo}</div>
-              </div>
-
-              <div style={{ marginBottom:12 }}>
-                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:4, fontWeight:600 }}>COLOR</div>
-                <div style={{ fontSize:15, fontWeight:700, padding:'6px 12px', background:'rgba(139,92,246,0.15)', borderRadius:'6px', display:'inline-block' }}>{aiResult.color}</div>
-              </div>
-
-              <div style={{ marginBottom:12 }}>
-                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:4, fontWeight:600 }}>UNIDADES</div>
-                <div style={{ fontSize:15, fontWeight:700 }}>{aiResult.unidades}</div>
+              <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-subtle)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600, textTransform: 'uppercase' }}>
+                  Dientes seleccionados
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                  {formData.dientes.length > 0 ? formData.dientes.join(', ') : '—'}
+                </div>
               </div>
             </div>
 
-            {/* TIEMPOS Y CONFIANZA */}
-            <div style={{ background:'var(--bg-primary)', borderRadius:'var(--radius-lg)', padding:20, border:'2px solid #34D399' }}>
-              <div style={{ fontSize:13, fontWeight:700, color:'var(--text-muted)', marginBottom:14, textTransform:'uppercase' }}>⏰ Tiempos y confianza</div>
-
-              <div style={{ marginBottom:12, padding:12, background:'rgba(52,211,153,0.08)', borderRadius:'var(--radius-md)', border:'1px solid rgba(52,211,153,0.2)' }}>
-                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:2, fontWeight:600 }}>⏰ HORA QUE DICE LA ORDEN (Llegada)</div>
-                <div style={{ fontSize:16, fontWeight:700, color:'#34D399', marginBottom:4 }}>{aiResult.horaLlegada}</div>
-                <div style={{ fontSize:9, color:'var(--text-muted)' }}>Hora en la que el Dr registró la orden</div>
+            <div style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', padding: 20, border: '2px solid #34D399' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 16, textTransform: 'uppercase' }}>
+                ⏰ Tiempos y Detalles
               </div>
 
-              <div style={{ marginBottom:12, padding:12, background:'rgba(94,234,212,0.08)', borderRadius:'var(--radius-md)', border:'1px solid rgba(94,234,212,0.2)' }}>
-                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:2, fontWeight:600 }}>📅 FECHA DE ENTREGA PROMETIDA</div>
-                <div style={{ fontSize:16, fontWeight:700, color:'#34D399', marginBottom:4 }}>{aiResult.fechaEntrega}</div>
-                <div style={{ fontSize:9, color:'var(--text-muted)' }}>Cuándo debe estar listo</div>
+              <div style={{ marginBottom: 12, padding: 12, background: 'rgba(52,211,153,0.08)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600 }}>
+                  ⏰ Hora de Llegada
+                </div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#34D399' }}>{formData.horaLlegada}</div>
               </div>
 
-              <div style={{ marginBottom:12, padding:12, background:'rgba(139,92,246,0.08)', borderRadius:'var(--radius-md)', border:'1px solid rgba(139,92,246,0.2)' }}>
-                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:2, fontWeight:600 }}>⏳ HORA REAL DE SUBIDA</div>
-                <div style={{ fontSize:14, fontWeight:700, color:'#8B5CF6' }}>{aiResult.timestampFull || aiResult.timestamp}</div>
-                <div style={{ fontSize:9, color:'var(--text-muted)' }}>Cuándo se registró en el sistema</div>
+              <div style={{ marginBottom: 12, padding: 12, background: 'rgba(94,234,212,0.08)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600 }}>
+                  📅 Fecha de Entrega
+                </div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#34D399' }}>{formData.fechaEntrega}</div>
               </div>
 
-              <div style={{ marginBottom:12, padding:16, background:'rgba(52,211,153,0.15)', borderRadius:'var(--radius-md)', border:'2px solid rgba(52,211,153,0.3)' }}>
-                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:4, fontWeight:600 }}>CONFIANZA IA</div>
-                <div style={{ fontSize:24, fontWeight:900, color:'#34D399' }}>{aiResult.confianza}%</div>
-                <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:4 }}>{aiResult.confianza >= 90 ? '✅ Muy confiable' : aiResult.confianza >= 75 ? '⚠️ Revisar manualmente' : '❌ Tomar nueva foto'}</div>
-              </div>
+              {formData.notas && (
+                <div style={{ marginBottom: 12, padding: 12, background: 'rgba(139,92,246,0.08)', borderRadius: 'var(--radius-md)' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600 }}>
+                    📝 Notas
+                  </div>
+                  <div style={{ fontSize: 13, color: 'var(--text-primary)' }}>{formData.notas}</div>
+                </div>
+              )}
 
-              {aiResult.esManual && <div style={{ fontSize:11, fontWeight:600, color:'var(--mod-ordenes)', padding:8, background:'rgba(139,92,246,0.1)', borderRadius:'var(--radius-md)', textAlign:'center' }}>✍️ Datos ingresados manualmente</div>}
-
-              {(aiResult.esGarantia || aiResult.escaneo) && (
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginTop:12 }}>
-                  {aiResult.esGarantia && <div style={{ fontSize:11, fontWeight:600, color:'#F97316', padding:8, background:'rgba(249,115,22,0.1)', borderRadius:'var(--radius-md)', textAlign:'center' }}>🔄 GARANTÍA</div>}
-                  {aiResult.escaneo && <div style={{ fontSize:11, fontWeight:600, color:'#0EA5E9', padding:8, background:'rgba(14,165,233,0.1)', borderRadius:'var(--radius-md)', textAlign:'center' }}>📱 ESCANEO (-$10)</div>}
+              {(formData.garantia || formData.escaneo) && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {formData.garantia && (
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#F97316', padding: 8, background: 'rgba(249,115,22,0.1)', borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                      🔄 GARANTÍA
+                    </div>
+                  )}
+                  {formData.escaneo && (
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#0EA5E9', padding: 8, background: 'rgba(14,165,233,0.1)', borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                      📱 ESCANEO
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           </div>
 
-          <div style={{ display:'flex', gap:12, justifyContent:'flex-end' }}>
-            <button onClick={() => { setAiStep('upload'); setAiResult(null); }} style={{ padding:'12px 24px', background:'var(--bg-card)', border:'2px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:'var(--text-secondary)', cursor:'pointer', fontSize:14, fontWeight:700 }}>📸 Otra foto</button>
-            <button onClick={() => confirmarOrden(aiResult)} style={{ padding:'12px 28px', background:'var(--mod-ordenes)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', cursor:'pointer', fontSize:14, fontWeight:700 }}>✅ Confirmar y enviar a Producción</button>
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => setStep('odontograma')}
+              style={{
+                padding: '12px 24px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer',
+                fontSize: 14, fontWeight: 700
+              }}
+            >
+              ← Atrás
+            </button>
+            <button
+              onClick={saveOrder}
+              style={{
+                padding: '12px 28px', background: 'var(--mod-ordenes)', color: '#fff', border: 'none',
+                borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 14, fontWeight: 700
+              }}
+            >
+              ✅ Guardar y Enviar a Producción
+            </button>
           </div>
         </SubSection>
       )}
 
-      {/* HISTORIAL DE ÓRDENES CARGADAS */}
-      {uploadedOrders.length > 0 && (
-        <SubSection title={`Órdenes registradas hoy (${uploadedOrders.length})`} color="var(--mod-ordenes)">
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(320px, 1fr))', gap:12 }}>
-            {uploadedOrders.map((orden) => (
-              <div key={orden.id} style={{ background:'var(--bg-primary)', borderRadius:'var(--radius-lg)', padding:16, borderLeft:'4px solid var(--mod-ordenes)', border:'1px solid var(--border-subtle)' }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:12 }}>
+      {/* LISTADO DE ÓRDENES */}
+      {step === 'lista' && ordenesCargadas.length > 0 && (
+        <SubSection title={`Órdenes Registradas (${ordenesCargadas.length})`} color="var(--mod-ordenes)">
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
+            {ordenesCargadas.map((orden) => (
+              <div
+                key={orden.id}
+                style={{
+                  background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', padding: 16,
+                  border: '1px solid var(--border-subtle)', borderLeft: `4px solid var(--mod-ordenes)`
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
                   <div>
-                    <div style={{ fontSize:13, fontWeight:700, color:'var(--text-muted)', marginBottom:4 }}>ORDEN #{orden.id.toString().slice(-4)}</div>
-                    <div style={{ fontSize:15, fontWeight:700, color:'var(--mod-ordenes)' }}>{orden.doctor}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4 }}>
+                      ORDEN #{orden.id.toString().slice(-4)}
+                    </div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--mod-ordenes)' }}>
+                      {orden.doctor}
+                    </div>
                   </div>
-                  <div style={{ padding:'4px 8px', background:'rgba(52,211,153,0.15)', borderRadius:'6px', fontSize:11, fontWeight:700, color:'#34D399' }}>✅ Enviada</div>
-                </div>
-
-                <div style={{ fontSize:14, fontWeight:600, marginBottom:8 }}>{orden.paciente}</div>
-                <div style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:14 }}>{orden.trabajo} — {orden.unidades}x — Color: {orden.color || '—'}</div>
-
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:10 }}>
-                  <div style={{ fontSize:11, color:'var(--text-muted)' }}>
-                    <div style={{ fontSize:9, fontWeight:700, marginBottom:2, color:'var(--text-muted)' }}>⏰ LLEGADA</div>
-                    <div style={{ fontWeight:600, fontSize:13 }}>{orden.horaLlegada}</div>
-                  </div>
-                  <div style={{ fontSize:11, color:'var(--text-muted)' }}>
-                    <div style={{ fontSize:9, fontWeight:700, marginBottom:2, color:'var(--text-muted)' }}>📅 ENTREGA</div>
-                    <div style={{ fontWeight:600, fontSize:13 }}>{orden.fechaEntrega}</div>
+                  <div style={{ padding: '4px 8px', background: 'rgba(52,211,153,0.15)', borderRadius: '6px', fontSize: 11, fontWeight: 700, color: '#34D399' }}>
+                    ✅ Enviada
                   </div>
                 </div>
-
-                <div style={{ padding:8, background:'rgba(139,92,246,0.08)', borderRadius:'var(--radius-md)', borderTop:'1px solid rgba(139,92,246,0.2)', paddingTop:10 }}>
-                  <div style={{ fontSize:8, color:'var(--text-muted)', marginBottom:2 }}>🕐 REGISTRADO EN SISTEMA</div>
-                  <div style={{ fontSize:10, fontWeight:600, color:'#8B5CF6' }}>{orden.fechaSubidaDetalle || orden.timestampFull || orden.timestamp}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>{orden.paciente}</div>
+                <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                  {orden.trabajo} — {orden.unidades}x
                 </div>
-
-                {(orden.esGarantia || orden.escaneo) && (
-                  <div style={{ display:'flex', gap:6, marginTop:10, flexWrap:'wrap' }}>
-                    {orden.esGarantia && <div style={{ fontSize:9, fontWeight:700, color:'#F97316', padding:'4px 8px', background:'rgba(249,115,22,0.1)', borderRadius:'4px' }}>🔄 GARANTÍA</div>}
-                    {orden.escaneo && <div style={{ fontSize:9, fontWeight:700, color:'#0EA5E9', padding:'4px 8px', background:'rgba(14,165,233,0.1)', borderRadius:'4px' }}>📱 ESCANEO</div>}
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+                  🦷 Dientes: {orden.dientes.join(', ') || '—'}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                  <div style={{ fontSize: 11 }}>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 2 }}>⏰ Llegada</div>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{orden.horaLlegada}</div>
                   </div>
-                )}
+                  <div style={{ fontSize: 11 }}>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 2 }}>📅 Entrega</div>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{orden.fechaEntrega}</div>
+                  </div>
+                </div>
+                <div style={{ paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 2 }}>Registrado en sistema</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: '#8B5CF6' }}>{orden.timestampFull}</div>
+                </div>
               </div>
             ))}
           </div>
         </SubSection>
       )}
 
-      {uploadedOrders.length === 0 && aiStep === 'upload' && (
-        <div style={{ textAlign:'center', padding:40, background:'rgba(139,92,246,0.04)', borderRadius:'var(--radius-lg)' }}>
-          <div style={{ fontSize:40, marginBottom:12 }}>📭</div>
-          <div style={{ fontSize:15, fontWeight:700, color:'var(--text-secondary)' }}>No hay órdenes registradas aún</div>
-          <div style={{ fontSize:13, color:'var(--text-muted)', marginTop:4 }}>Las órdenes que proceses aparecerán aquí</div>
+      {/* BOTÓN PARA VER LISTA */}
+      {step !== 'lista' && ordenesCargadas.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <button
+            onClick={() => setStep('lista')}
+            style={{
+              width: '100%', padding: '14px', background: 'var(--bg-card)', border: '2px dashed var(--border-subtle)',
+              borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer',
+              fontSize: 14, fontWeight: 700
+            }}
+          >
+            📋 Ver mis órdenes ({ordenesCargadas.length})
+          </button>
+        </div>
+      )}
+
+      {/* ESTADO VACÍO */}
+      {ordenesCargadas.length === 0 && step === 'lista' && (
+        <div style={{ textAlign: 'center', padding: 40, background: 'rgba(91,141,239,0.04)', borderRadius: 'var(--radius-lg)' }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>📭</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-secondary)' }}>No hay órdenes aún</div>
+          <button
+            onClick={() => setStep('form')}
+            style={{
+              marginTop: 16, padding: '10px 20px', background: 'var(--mod-ordenes)', color: '#fff',
+              border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 14, fontWeight: 700
+            }}
+          >
+            ➕ Nueva Orden
+          </button>
         </div>
       )}
 
@@ -1828,10 +2216,6 @@ function OrdenesModule() {
         @keyframes pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.5; }
-        }
-        @keyframes slideRight {
-          0% { width: 0%; }
-          100% { width: 100%; }
         }
       `}</style>
     </div>
@@ -1857,7 +2241,7 @@ const PRODUCTION_PHASES = [
   { id: 'calidad',        label: '✅ CALIDAD',         desc: 'Control final e inspección',   color: '#34D399' },
 ];
 
-function ProduccionIntegradaModule() {
+function ProduccionIntegradaModule({ onNavigate }) {
   const ordenesGuardadas = localStorage.getItem('produccionOrdenes');
   const INITIAL_ORDERS = ordenesGuardadas ? JSON.parse(ordenesGuardadas) : [
     { id: 1, folio: 'ZL-0001', doctor: 'Dr. Martínez López', paciente: 'María García', trabajo: 'Corona Zirconia', dientes: '11, 12', unidades: 2, estado: 'recepcion', asignado_a: null, historial: [{ fase: 'recepcion', fecha: '2026-05-27 09:30', usuario: 'Itzel', notas: 'Ingresado manualmente' }], fotos_evidencia: [], notas_trabajos: '' },
@@ -1874,7 +2258,8 @@ function ProduccionIntegradaModule() {
   // Assignment dialog state
   const [assignmentDialog, setAssignmentDialog] = React.useState({ visible: false, orden: null, nuevoEstado: null, asignado: null });
   const [editingAssignment, setEditingAssignment] = React.useState(false);
-  const TEAM_MEMBERS = ['Aram', 'Fidel', 'Rafael', 'Kevin', 'Montserrat', 'Papa'];
+  // FILTRADO: Monserrat e Itzel son admin-only, no asignables en producción
+  const TEAM_MEMBERS = ['Aram', 'Fidel', 'Rafael', 'Kevin', 'Papa'];
 
   // Financial control state
   const [notaFinancieraDialog, setNotaFinancieraDialog] = React.useState({ visible: false, orden: null, fotoNota: null, montoNota: null, requiresFactura: false, procesando: false });
@@ -1981,6 +2366,14 @@ function ProduccionIntegradaModule() {
       });
       setOrdenes(nuevasOrdenes);
       localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+
+      // Sincronizar con Mensajería y Finanzas si alcanza fase final
+      const ordenActualizada = nuevasOrdenes.find(o => o.id === orderId);
+      if (nuevoEstado === 'calidad') {
+        ordenActualizada.estado = 'enviado';
+        syncOrderToMessagingAndFinance(ordenActualizada);
+        localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+      }
     }
   };
 
@@ -1997,6 +2390,15 @@ function ProduccionIntegradaModule() {
     });
     setOrdenes(nuevasOrdenes);
     localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+
+    // Sincronizar con Mensajería y Finanzas si alcanza fase final
+    if (assignmentDialog.nuevoEstado === 'calidad') {
+      const ordenActualizada = nuevasOrdenes.find(o => o.id === assignmentDialog.orden.id);
+      ordenActualizada.estado = 'enviado';
+      syncOrderToMessagingAndFinance(ordenActualizada);
+      localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+    }
+
     setAssignmentDialog({ visible: false, orden: null, nuevoEstado: null, asignado: null });
   };
 
@@ -2053,9 +2455,13 @@ function ProduccionIntegradaModule() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '16px', padding: '20px', background: 'var(--bg-primary)', overflow: 'hidden' }}>
-      <SectionHeader title="Producción" subtitle="Arrastra órdenes entre fases | Haz clic en Paciente/Doctor para detalles" color="var(--mod-produccion)" icon="🏭">
-        <button onClick={() => setShowFormularioRecepcion(!showFormularioRecepcion)} style={{ padding: '8px 16px', background: 'var(--mod-produccion)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600 }}>➕ Nueva Orden</button>
-      </SectionHeader>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px' }}>
+        <SectionHeader title="Producción" subtitle="Arrastra órdenes entre fases | Haz clic en Paciente/Doctor para detalles" color="var(--mod-produccion)" icon="🏭" />
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <button onClick={() => setShowFormularioRecepcion(!showFormularioRecepcion)} style={{ padding: '8px 16px', background: 'var(--mod-produccion)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600 }}>➕ Nueva Orden</button>
+          {onNavigate && <button onClick={() => onNavigate('dashboard')} style={{ padding: '10px 16px', background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: '14px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>← Volver</button>}
+        </div>
+      </div>
 
       {showFormularioRecepcion && (
         <div style={{ background: 'var(--bg-card)', padding: '20px', borderRadius: 'var(--radius-lg)', border: '2px solid var(--mod-produccion)', marginBottom: '16px' }}>
@@ -2425,7 +2831,7 @@ function ProduccionIntegradaModule() {
   );
 }
 
-function CheckinModule({ currentUser }) {
+function CheckinModule({ currentUser, onNavigate }) {
   const [checkinLocation, setCheckinLocation] = useState(null);
   const [checkinTime, setCheckinTime] = useState(null);
   const [checkoutTime, setCheckoutTime] = useState(null);
@@ -2487,7 +2893,12 @@ function CheckinModule({ currentUser }) {
 
   return (
     <div style={{ animation:'fadeIn 0.3s' }}>
-      <SectionHeader title="Asistencia y Check-in" subtitle={isAdmin ? 'Vista completa de todo el equipo' : `Tus registros, ${currentUser?.name}`} color="var(--mod-checkin)" icon="📍" />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <SectionHeader title="Asistencia y Check-in" subtitle={isAdmin ? 'Vista completa de todo el equipo' : `Tus registros, ${currentUser?.name}`} color="var(--mod-checkin)" icon="📍" />
+        <button onClick={() => onNavigate && onNavigate('dashboard')} style={{ padding: '10px 16px', background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: '14px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
+          ← Volver
+        </button>
+      </div>
 
       {!isAdmin && (
         <div style={{ marginBottom:20 }}>
@@ -2561,7 +2972,7 @@ function CheckinModule({ currentUser }) {
 // ============================================================
 // MENSAJERÍA
 // ============================================================
-function MensajeriaModule() {
+function MensajeriaModule({ onNavigate }) {
   const [gastosMessenger, setGastosMessenger] = React.useState(JSON.parse(localStorage.getItem('gastosMessenger') || '[]'));
   const [showAddGasto, setShowAddGasto] = React.useState(false);
   const [nuevoGasto, setNuevoGasto] = React.useState({ tipo: 'taxi', monto: '', foto: null, hora: null });
@@ -2735,7 +3146,7 @@ const COBROS_DATA = [
   { orden:null, doctor:null, paciente:null, trabajo:null, monto:500, moneda:'USD', metodo:'efectivo', nota_firmada:false, confirmado:true },
 ];
 
-function CobrosModule() {
+function CobrosModule({ onNavigate }) {
   const [showAI, setShowAI] = useState(false);
   const [showRegistrar, setShowRegistrar] = useState(false);
   const [showTC, setShowTC] = useState(false);
@@ -4779,22 +5190,22 @@ function App() {
   const renderContent = () => {
     switch(activeModule) {
       case 'dashboard': return <Dashboard currentUser={currentUser} onNavigate={setActiveModule} />;
-      case 'ordenes': return <OrdenesModule />;
-      case 'produccion': return <ProduccionIntegradaModule />;
+      case 'ordenes': return <OrdenesModule onNavigate={setActiveModule} />;
+      case 'produccion': return <ProduccionIntegradaModule onNavigate={setActiveModule} />;
       // case 'evidencia': REMOVIDO - integrado en Producción
-      case 'checkin': return <CheckinModule currentUser={currentUser} />;
-      case 'mensajeria': return <MensajeriaModule />;
-      case 'cobros': return <CobrosModule />;
-      case 'lab-externo': return <LabExternoModule />;
-      case 'inventario': return <InventarioModule />;
-      case 'tarifas': return <TarifasModule />;
-      case 'config-ia': return <ConfiguracionIAModule />;
-      case 'finanzas': return <FinanzasModule currentUser={currentUser} />;
-      case 'notas-ia': return <NotasIAModule currentUser={currentUser} />;
-      case 'nomina': return <NominaModule />;
-      case 'corte': return <CorteModule />;
-      case 'doctores': return currentDoctor ? <PortalDoctoresPersonalModule currentUser={currentDoctor} /> : <PortalDoctoresLoginModule currentUser={currentDoctor} setCurrentUser={setCurrentDoctor} />;
-      case 'config': return <ConfigModule />;
+      case 'checkin': return <CheckinModule currentUser={currentUser} onNavigate={setActiveModule} />;
+      case 'mensajeria': return <MensajeriaModule onNavigate={setActiveModule} />;
+      case 'cobros': return <CobrosModule onNavigate={setActiveModule} />;
+      case 'lab-externo': return <LabExternoModule onNavigate={setActiveModule} />;
+      case 'inventario': return <InventarioModule onNavigate={setActiveModule} />;
+      case 'tarifas': return <TarifasModule onNavigate={setActiveModule} />;
+      case 'config-ia': return <ConfiguracionIAModule onNavigate={setActiveModule} />;
+      case 'finanzas': return <FinanzasModule currentUser={currentUser} onNavigate={setActiveModule} />;
+      case 'notas-ia': return <NotasIAModule currentUser={currentUser} onNavigate={setActiveModule} />;
+      case 'nomina': return <NominaModule onNavigate={setActiveModule} />;
+      case 'corte': return <CorteModule onNavigate={setActiveModule} />;
+      case 'doctores': return currentDoctor ? <PortalDoctoresPersonalModule currentUser={currentDoctor} onNavigate={setActiveModule} /> : <PortalDoctoresLoginModule currentUser={currentDoctor} setCurrentUser={setCurrentDoctor} onNavigate={setActiveModule} />;
+      case 'config': return <ConfigModule onNavigate={setActiveModule} />;
       default: return <Dashboard currentUser={currentUser} onNavigate={setActiveModule} />;
     }
   };
