@@ -138,8 +138,13 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 // ============================================================
 // SUPABASE INTEGRATION
 // ============================================================
+// SUPABASE & API CONFIGURATION
 const SUPABASE_URL = 'https://amsfcyosfusysywkwbah.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFtc2ZjeW9zZnVzeXN5d2tid2FoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTIwNzg5NTcsImV4cCI6MTc0MzYxNDk1N30.0R5r2_6jlJjQ_L0Zz_Zz3P_4Y5Q_8Z9X_0A_1B_2C_3D';
+
+// ANTHROPIC API CONFIGURATION
+const ANTHROPIC_API_KEY = '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';
+const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 
 let supabaseClient = null;
 
@@ -148,6 +153,310 @@ async function initSupabase() {
   const { createClient } = window.supabase;
   supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   return supabaseClient;
+}
+
+// FUNCIÓN: Leer monto de nota física con Claude
+async function readMontoFromNota(base64Image) {
+  try {
+    const response = await fetch(ANTHROPIC_API_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 200,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/jpeg', data: base64Image.split(',')[1] }
+            },
+            {
+              type: 'text',
+              text: 'Lee esta nota física dental y extrae SOLO el monto total a cobrar. Responde con SOLO el número (ej: 75.50 o 80). Si hay moneda ($ pesos o USD), igualmente responde solo con el número.'
+            }
+          ]
+        }]
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('Claude API error:', error);
+      return null;
+    }
+
+    const data = await response.json();
+    const content = data.content[0]?.text || '';
+    const monto = parseFloat(content.match(/\d+\.?\d*/)?.[0] || '0');
+    return monto > 0 ? monto : null;
+  } catch (error) {
+    console.error('Error reading nota:', error);
+    return null;
+  }
+}
+
+// FUNCIÓN: Registrar en auditoría financiera
+async function registrarAuditoria(orden, montoNota, requiresFactura = false) {
+  const auditoria = {
+    id: Date.now(),
+    ordenId: orden.id,
+    folio: orden.folio,
+    doctor: orden.doctor,
+    paciente: orden.paciente,
+    trabajo: orden.trabajo,
+    costoBase: 80, // Corona por defecto
+    montoNota: montoNota,
+    descuento: Math.max(0, 80 - montoNota),
+    estado: 'pendiente',
+    facturaRequerida: requiresFactura,
+    facturaPendiente: requiresFactura,
+    fecha: new Date().toLocaleString('es-MX'),
+    usuario: localStorage.getItem('usuarioActual') || 'Sistema'
+  };
+
+  const auditorias = JSON.parse(localStorage.getItem('auditoriaFinanciera') || '[]');
+  auditorias.push(auditoria);
+  localStorage.setItem('auditoriaFinanciera', JSON.stringify(auditorias));
+
+  return auditoria;
+}
+
+// FUNCIÓN: Validar foto de evidencia con Claude
+async function validarFotoEvidencia(base64Image, fase, orden) {
+  try {
+    const response = await fetch(ANTHROPIC_API_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 300,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/jpeg', data: base64Image.split(',')[1] }
+            },
+            {
+              type: 'text',
+              text: `Esta es una foto de trabajo dental en la fase: ${fase}.
+Analiza y responde en JSON:
+{
+  "calidad": "excelente|buena|aceptable|problemas",
+  "defectos": ["lista", "de", "defectos"],
+  "recomendaciones": "texto breve",
+  "aprobado": true/false,
+  "urgencia": "normal|alerta"
+}`
+            }
+          ]
+        }]
+      })
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json();
+    const texto = data.content[0]?.text || '{}';
+    return JSON.parse(texto.match(/\{[\s\S]*\}/)?.[0] || '{}');
+  } catch (error) {
+    console.error('Error validando foto:', error);
+    return null;
+  }
+}
+
+// FUNCIÓN: Sugerir próximo paso
+async function sugerirProximoPaso(orden, faseActual) {
+  try {
+    const ordenesHistorico = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
+    const similares = ordenesHistorico.filter(o => o.trabajo === orden.trabajo);
+
+    const response = await fetch(ANTHROPIC_API_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 250,
+        messages: [{
+          role: 'user',
+          content: `Orden: ${orden.folio}
+Tipo: ${orden.trabajo}
+Fase actual: ${faseActual}
+Unidades: ${orden.unidades}
+
+Sugiere el próximo paso en JSON:
+{
+  "proximaFase": "nombre",
+  "tiempoEstimado": "X días",
+  "preparacion": "lista de preparativos",
+  "riesgo": "bajo|medio|alto",
+  "nota": "alerta o consejo importante"
+}`
+        }]
+      })
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json();
+    const texto = data.content[0]?.text || '{}';
+    return JSON.parse(texto.match(/\{[\s\S]*\}/)?.[0] || '{}');
+  } catch (error) {
+    console.error('Error sugiriendo próximo paso:', error);
+    return null;
+  }
+}
+
+// FUNCIÓN: Registrar estadística de producción
+async function registrarEstadisticaProduccion(orden, fase, tiempoFase, calidad = 'buena') {
+  const stats = {
+    id: Date.now(),
+    ordenId: orden.id,
+    folio: orden.folio,
+    trabajo: orden.trabajo,
+    fase: fase,
+    asignado_a: orden.asignado_a,
+    tiempoFase: tiempoFase, // en horas
+    calidad: calidad, // excelente|buena|aceptable|problemas
+    fecha: new Date().toLocaleString('es-MX'),
+    dia: new Date().toLocaleDateString('es-MX')
+  };
+
+  const estadisticas = JSON.parse(localStorage.getItem('estadisticasProduccion') || '[]');
+  estadisticas.push(stats);
+  localStorage.setItem('estadisticasProduccion', JSON.stringify(estadisticas));
+
+  return stats;
+}
+
+// FUNCIÓN: Analizar eficiencia de producción
+async function analizarEficiencia() {
+  try {
+    const ordenes = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
+    const estadisticas = JSON.parse(localStorage.getItem('estadisticasProduccion') || '[]');
+    const hoy = new Date().toLocaleDateString('es-MX');
+    const estadisticasHoy = estadisticas.filter(s => s.dia === hoy);
+
+    const response = await fetch(ANTHROPIC_API_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 400,
+        messages: [{
+          role: 'user',
+          content: `Analiza la eficiencia de producción:
+Órdenes activas: ${ordenes.length}
+Completadas hoy: ${estadisticasHoy.length}
+Defectos detectados: ${estadisticasHoy.filter(s => s.calidad === 'problemas').length}
+
+Datos:
+${JSON.stringify(estadisticasHoy.slice(0, 5), null, 2)}
+
+Responde en JSON:
+{
+  "ordenesCompletadas": número,
+  "defectosDetectados": número,
+  "eficiencia": "porcentaje",
+  "cuelloBotella": "fase o persona",
+  "recomendacion": "acción específica",
+  "alerta": "crítica o normal"
+}`
+        }]
+      })
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json();
+    const texto = data.content[0]?.text || '{}';
+    return JSON.parse(texto.match(/\{[\s\S]*\}/)?.[0] || '{}');
+  } catch (error) {
+    console.error('Error analizando eficiencia:', error);
+    return null;
+  }
+}
+
+// FUNCIÓN: Obtener historial por persona
+async function obtenerHistorialPersona(nombre) {
+  const estadisticas = JSON.parse(localStorage.getItem('estadisticasProduccion') || '[]');
+  const delPersona = estadisticas.filter(s => s.asignado_a === nombre);
+
+  const totalOrdenes = delPersona.length;
+  const buenas = delPersona.filter(s => s.calidad === 'excelente' || s.calidad === 'buena').length;
+  const conProblemas = delPersona.filter(s => s.calidad === 'problemas').length;
+  const tiempoPromedio = delPersona.length > 0 ? (delPersona.reduce((sum, s) => sum + s.tiempoFase, 0) / delPersona.length).toFixed(1) : 0;
+
+  return {
+    nombre: nombre,
+    ordenesCompletadas: totalOrdenes,
+    calidadExcelente: buenas,
+    conProblemas: conProblemas,
+    tasaCalidad: totalOrdenes > 0 ? ((buenas / totalOrdenes) * 100).toFixed(1) : 0,
+    tiempoPromedio: tiempoPromedio,
+    especialidad: delPersona.map(s => s.trabajo).filter((v, i, a) => a.indexOf(v) === i).slice(0, 3).join(', ')
+  };
+}
+
+// FUNCIÓN: Generar alertas inteligentes
+async function generarAlertasInteligentes() {
+  const ordenes = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
+  const auditoria = JSON.parse(localStorage.getItem('auditoriaFinanciera') || '[]');
+  const estadisticas = JSON.parse(localStorage.getItem('estadisticasProduccion') || '[]');
+
+  const alertas = [];
+
+  // Órdenes atrasadas
+  const ahora = new Date();
+  ordenes.forEach(o => {
+    const enProduccion = ahora - new Date(o.historial[0]?.fecha || ahora) > 5 * 24 * 60 * 60 * 1000; // Más de 5 días
+    if (enProduccion && o.estado !== 'terminado') {
+      alertas.push({
+        tipo: 'ORDEN_ATRASADA',
+        folio: o.folio,
+        mensaje: `${o.folio} lleva más de 5 días en producción (${o.estado})`,
+        prioridad: 'alta'
+      });
+    }
+  });
+
+  // Facturas pendientes
+  auditoria.filter(a => a.facturaPendiente).forEach(a => {
+    alertas.push({
+      tipo: 'FACTURA_PENDIENTE',
+      folio: a.folio,
+      mensaje: `${a.folio} está esperando factura desde hace días`,
+      prioridad: 'media'
+    });
+  });
+
+  // Patrones de defectos
+  const defectosHoy = estadisticas.filter(s =>
+    s.dia === new Date().toLocaleDateString('es-MX') && s.calidad === 'problemas'
+  );
+  if (defectosHoy.length > 2) {
+    alertas.push({
+      tipo: 'CALIDAD_BAJA',
+      mensaje: `${defectosHoy.length} defectos detectados hoy - revisar proceso`,
+      prioridad: 'alta'
+    });
+  }
+
+  return alertas;
 }
 
 const db = {
@@ -1469,6 +1778,16 @@ function ProduccionIntegradaModule() {
   const [editingAssignment, setEditingAssignment] = React.useState(false);
   const TEAM_MEMBERS = ['Aram', 'Fidel', 'Rafael', 'Kevin', 'Montserrat', 'Papa'];
 
+  // Financial control state
+  const [notaFinancieraDialog, setNotaFinancieraDialog] = React.useState({ visible: false, orden: null, fotoNota: null, montoNota: null, requiresFactura: false, procesando: false });
+  const notaFileRef = React.useRef(null);
+
+  // Production Intelligence state
+  const [showIntelligencePanel, setShowIntelligencePanel] = React.useState(false);
+  const [evidencePhoto, setEvidencePhoto] = React.useState({ visible: false, orden: null, foto: null, validando: false, resultado: null });
+  const evidenceFileRef = React.useRef(null);
+  const [showDashboard, setShowDashboard] = React.useState(false);
+
   // Function to get default assignment based on destination phase
   const getDefaultAssignment = (nuevoEstado) => {
     if (nuevoEstado === 'escaneo-diseño' || nuevoEstado === 'trabajo-fisico') return 'Aram';
@@ -1742,25 +2061,12 @@ function ProduccionIntegradaModule() {
               {selectedOrder.estado === 'calidad' && (
                 <div style={{ marginBottom: '24px', padding: '16px', background: 'rgba(52, 211, 153, 0.1)', borderRadius: 'var(--radius-md)', border: '2px solid rgba(52, 211, 153, 0.3)' }}>
                   <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#34D399', marginBottom: '12px' }}>✅ CONTROL DE CALIDAD</h3>
-                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>Esta orden está lista para ser completada. Selecciona la acción:</p>
+                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>Esta orden está lista. Captura la foto de la nota física para finalizar:</p>
                   <button
-                    onClick={() => {
-                      const ahora = new Date();
-                      const fecha = ahora.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                      const nuevasOrdenes = ordenes.map(o => {
-                        if (o.id === selectedOrder.id) {
-                          return { ...o, estado: 'terminado', historial: [...o.historial, { fase: 'terminado', fecha: fecha, usuario: selectedOrder.asignado_a, notas: 'Orden completada y lista para entrega' }] };
-                        }
-                        return o;
-                      });
-                      setOrdenes(nuevasOrdenes);
-                      localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
-                      alert('✅ Orden marcada como terminada. Se puede proceder a mensajería y finanzas.');
-                      closeDrawer();
-                    }}
+                    onClick={() => setNotaFinancieraDialog({ ...notaFinancieraDialog, visible: true, orden: selectedOrder })}
                     style={{ width: '100%', padding: '12px 16px', background: '#34D399', color: '#000', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
                   >
-                    📧 Enviar a Terminado (Mensajería/Finanzas)
+                    📸 Capturar Nota Física
                   </button>
                 </div>
               )}
@@ -1850,6 +2156,140 @@ function ProduccionIntegradaModule() {
                 ✅ Confirmar
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Nota Financiera */}
+      {notaFinancieraDialog.visible && notaFinancieraDialog.orden && (
+        <div style={{ position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 }}>
+          <div style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', padding: '32px', maxWidth: '500px', width: '90%', border: '3px solid var(--mod-finanzas)', maxHeight: '90vh', overflowY: 'auto' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>💰 Capturar Nota Física</h2>
+            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '20px' }}>Toma una foto clara de la nota física con el monto a cobrar</p>
+
+            <div style={{ background: 'var(--bg-card)', padding: '16px', borderRadius: 'var(--radius-md)', marginBottom: '20px', border: '1px solid var(--border-subtle)' }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>Orden: {notaFinancieraDialog.orden.folio}</div>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{notaFinancieraDialog.orden.paciente} — {notaFinancieraDialog.orden.trabajo}</div>
+              <div style={{ fontSize: '12px', color: 'var(--mod-finanzas)', marginTop: '8px', fontWeight: 700 }}>Costo base: $80.00</div>
+            </div>
+
+            {!notaFinancieraDialog.fotoNota ? (
+              <div style={{ marginBottom: '20px' }}>
+                <input
+                  ref={notaFileRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = (event) => {
+                        setNotaFinancieraDialog({ ...notaFinancieraDialog, fotoNota: event.target.result });
+                      };
+                      reader.readAsDataURL(file);
+                    }
+                  }}
+                  style={{ display: 'none' }}
+                />
+                <button
+                  onClick={() => notaFileRef.current?.click()}
+                  style={{ width: '100%', padding: '16px', background: 'var(--bg-input)', border: '2px dashed var(--mod-finanzas)', borderRadius: 'var(--radius-md)', color: 'var(--mod-finanzas)', cursor: 'pointer', fontWeight: 600, fontSize: '14px' }}
+                >
+                  📸 Capturar o subir foto
+                </button>
+              </div>
+            ) : (
+              <div style={{ marginBottom: '20px' }}>
+                <img src={notaFinancieraDialog.fotoNota} alt="Nota" style={{ width: '100%', borderRadius: 'var(--radius-md)', maxHeight: '250px', objectFit: 'contain', marginBottom: '12px' }} />
+                <button
+                  onClick={() => setNotaFinancieraDialog({ ...notaFinancieraDialog, fotoNota: null })}
+                  style={{ width: '100%', padding: '8px 16px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+                >
+                  ✕ Cambiar foto
+                </button>
+              </div>
+            )}
+
+            {notaFinancieraDialog.fotoNota && !notaFinancieraDialog.montoNota && (
+              <div style={{ marginBottom: '20px' }}>
+                <button
+                  onClick={async () => {
+                    setNotaFinancieraDialog({ ...notaFinancieraDialog, procesando: true });
+                    const monto = await readMontoFromNota(notaFinancieraDialog.fotoNota);
+                    setNotaFinancieraDialog({ ...notaFinancieraDialog, montoNota: monto, procesando: false });
+                  }}
+                  disabled={notaFinancieraDialog.procesando}
+                  style={{ width: '100%', padding: '12px 16px', background: notaFinancieraDialog.procesando ? 'var(--bg-card)' : 'var(--accent-blue)', color: notaFinancieraDialog.procesando ? 'var(--text-muted)' : '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: notaFinancieraDialog.procesando ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '13px' }}
+                >
+                  {notaFinancieraDialog.procesando ? '⏳ Leyendo monto...' : '🤖 Leer monto con IA'}
+                </button>
+              </div>
+            )}
+
+            {notaFinancieraDialog.montoNota && (
+              <div style={{ marginBottom: '20px', padding: '16px', background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', border: '2px solid var(--mod-finanzas)' }}>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>💵 Monto leído de la nota:</div>
+                <div style={{ fontSize: '24px', fontWeight: 700, color: 'var(--mod-finanzas)', marginBottom: '12px' }}>${notaFinancieraDialog.montoNota.toFixed(2)}</div>
+
+                {notaFinancieraDialog.montoNota < 80 && (
+                  <div style={{ padding: '12px', background: 'rgba(251, 191, 36, 0.15)', borderRadius: '6px', borderLeft: '3px solid var(--warning)', marginBottom: '12px' }}>
+                    <div style={{ fontSize: '12px', color: 'var(--warning)', fontWeight: 600 }}>⚠️ DESCUENTO DETECTADO</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>Descuento: ${(80 - notaFinancieraDialog.montoNota).toFixed(2)}</div>
+                  </div>
+                )}
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: '12px' }}>
+                  <input
+                    type="checkbox"
+                    checked={notaFinancieraDialog.requiresFactura}
+                    onChange={(e) => setNotaFinancieraDialog({ ...notaFinancieraDialog, requiresFactura: e.target.checked })}
+                    style={{ cursor: 'pointer', width: '18px', height: '18px' }}
+                  />
+                  <span style={{ fontSize: '13px', color: 'var(--text-primary)', fontWeight: 600 }}>📋 Se requiere factura</span>
+                </label>
+
+                {notaFinancieraDialog.requiresFactura && (
+                  <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', borderLeft: '3px solid var(--danger)', fontSize: '11px', color: 'var(--danger)', fontWeight: 600 }}>
+                    🚨 FACTURA PENDIENTE - Se debe solicitar al doctor
+                  </div>
+                )}
+              </div>
+            )}
+
+            {notaFinancieraDialog.montoNota && (
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button
+                  onClick={() => setNotaFinancieraDialog({ visible: false, orden: null, fotoNota: null, montoNota: null, requiresFactura: false, procesando: false })}
+                  style={{ flex: 1, padding: '12px 16px', background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600 }}
+                >
+                  ✕ Cancelar
+                </button>
+                <button
+                  onClick={async () => {
+                    const auditoria = await registrarAuditoria(notaFinancieraDialog.orden, notaFinancieraDialog.montoNota, notaFinancieraDialog.requiresFactura);
+
+                    const ahora = new Date();
+                    const fecha = ahora.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    const nuevasOrdenes = ordenes.map(o => {
+                      if (o.id === notaFinancieraDialog.orden.id) {
+                        return { ...o, estado: 'terminado', historial: [...o.historial, { fase: 'terminado', fecha: fecha, usuario: o.asignado_a, notas: `Orden completada. Nota: $${notaFinancieraDialog.montoNota}${notaFinancieraDialog.requiresFactura ? ' (Factura pendiente)' : ''}` }] };
+                      }
+                      return o;
+                    });
+                    setOrdenes(nuevasOrdenes);
+                    localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+
+                    alert(`✅ Orden finalizada\n💵 Monto: $${notaFinancieraDialog.montoNota.toFixed(2)}\n${notaFinancieraDialog.montoNota < 80 ? `💰 Descuento: $${(80 - notaFinancieraDialog.montoNota).toFixed(2)}` : ''}\n${notaFinancieraDialog.requiresFactura ? '📋 ⚠️ FACTURA PENDIENTE' : ''}`);
+
+                    setNotaFinancieraDialog({ visible: false, orden: null, fotoNota: null, montoNota: null, requiresFactura: false, procesando: false });
+                    closeDrawer();
+                  }}
+                  style={{ flex: 1, padding: '12px 16px', background: 'var(--mod-finanzas)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600 }}
+                >
+                  💰 Enviar a Cobros
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
