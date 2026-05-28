@@ -2266,6 +2266,9 @@ function ProduccionIntegradaModule({ onNavigate }) {
   const evidenceFileRef = React.useRef(null);
   const [showDashboard, setShowDashboard] = React.useState(false);
 
+  // Lightbox para ver fotos de evidencia en grande
+  const [lightboxFoto, setLightboxFoto] = React.useState(null);
+
   // Function to get default assignment based on destination phase
   const getDefaultAssignment = (nuevoEstado) => {
     if (nuevoEstado === 'escaneo-diseño' || nuevoEstado === 'trabajo-fisico') return 'Aram';
@@ -2286,24 +2289,69 @@ function ProduccionIntegradaModule({ onNavigate }) {
     setEditingAssignment(false);
   };
 
+  // Convierte cualquier imagen a JPEG usando canvas (para formatos como HEIC que Claude no acepta)
+  const convertirImagenAJpeg = (file) => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        URL.revokeObjectURL(url);
+        // 0.85 = buena calidad, archivo razonable
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error(`El navegador no puede decodificar este formato (${file.type}). Por favor convierte la foto a JPEG o PNG e intenta de nuevo.`));
+      };
+      img.src = url;
+    });
+  };
+
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    // FIX: Detectar tipo MIME correcto del archivo (HEIC, PNG, JPEG, etc)
-    let mediaType = 'image/jpeg'; // default
-    if (file.type === 'image/png') mediaType = 'image/png';
-    else if (file.type === 'image/heic') mediaType = 'image/heic';
-    else if (file.type === 'image/heif') mediaType = 'image/heif';
-    else if (file.type === 'image/webp') mediaType = 'image/webp';
-    console.log('📸 Tipo de archivo detectado:', file.type, '→', mediaType);
+    // Claude solo acepta JPEG, PNG, GIF, WEBP. Si el archivo es otro formato
+    // (HEIC del iPhone, BMP, TIFF, etc.) lo convertimos a JPEG via canvas.
+    const formatosSoportados = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    let mediaType = file.type;
+    let base64Inicial;
 
     setProcesandoOCR(true);
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const base64 = event.target.result;
-      setFormData(prev => ({ ...prev, foto_base64: base64, foto_orden: file.name }));
 
+    try {
+      if (!formatosSoportados.includes(file.type)) {
+        console.log(`🔄 Convirtiendo ${file.type} a JPEG...`);
+        base64Inicial = await convertirImagenAJpeg(file);
+        mediaType = 'image/jpeg';
+        console.log('✅ Conversión exitosa');
+      } else {
+        // Formato soportado: leer directamente como base64
+        base64Inicial = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (ev) => resolve(ev.target.result);
+          reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
+          reader.readAsDataURL(file);
+        });
+      }
+      console.log('📸 Tipo final:', mediaType);
+    } catch (err) {
+      console.error('❌ Error preparando imagen:', err);
+      alert(`No se pudo procesar la imagen: ${err.message}`);
+      setProcesandoOCR(false);
+      return;
+    }
+
+    const base64 = base64Inicial;
+    setFormData(prev => ({ ...prev, foto_base64: base64, foto_orden: file.name }));
+
+    // Continuar con el procesamiento (envoltura async para mantener estructura)
+    await (async () => {
       try {
         // Extraer base64 sin prefijo
         const base64Data = base64.includes(',') ? base64.split(',')[1] : base64;
@@ -2418,8 +2466,7 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
       } finally {
         setProcesandoOCR(false);
       }
-    };
-    reader.readAsDataURL(file);
+    })();
   };
 
   const handleDragStart = (e, order) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('orderId', order.id); };
@@ -2743,9 +2790,16 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
                   <h3 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '12px' }}>📸 EVIDENCIA FOTOGRÁFICA</h3>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {selectedOrder.fotos_evidencia.map((foto, idx) => (
-                      <div key={idx} style={{ background: 'var(--bg-card)', borderRadius: 'var(--radius-md)', overflow: 'hidden', border: '2px solid var(--border-subtle)' }}>
-                        <div style={{ width: '100%', maxHeight: '200px', overflow: 'hidden', background: '#000' }}>
+                      <div
+                        key={idx}
+                        onClick={() => setLightboxFoto(foto)}
+                        style={{ background: 'var(--bg-card)', borderRadius: 'var(--radius-md)', overflow: 'hidden', border: '2px solid var(--border-subtle)', cursor: 'pointer', transition: 'transform 0.15s, border-color 0.15s' }}
+                        onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.02)'; e.currentTarget.style.borderColor = 'var(--mod-produccion)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.borderColor = 'var(--border-subtle)'; }}
+                      >
+                        <div style={{ width: '100%', maxHeight: '200px', overflow: 'hidden', background: '#000', position: 'relative' }}>
                           <img src={foto.data} alt={foto.nombre} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '0' }} />
+                          <div style={{ position: 'absolute', top: '8px', right: '8px', background: 'rgba(0,0,0,0.7)', color: '#fff', padding: '4px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>🔍 Click para ampliar</div>
                         </div>
                         <div style={{ padding: '10px', background: 'var(--bg-input)' }}>
                           <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>{foto.nombre}</div>
@@ -2957,6 +3011,30 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* LIGHTBOX: Ver foto de evidencia en grande */}
+      {lightboxFoto && (
+        <div
+          onClick={() => setLightboxFoto(null)}
+          style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.92)', zIndex: 3000, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'zoom-out', padding: '20px' }}
+        >
+          <button
+            onClick={(e) => { e.stopPropagation(); setLightboxFoto(null); }}
+            style={{ position: 'absolute', top: '20px', right: '20px', background: 'rgba(255,255,255,0.15)', border: '2px solid #fff', color: '#fff', width: '44px', height: '44px', borderRadius: '50%', cursor: 'pointer', fontSize: '20px', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            aria-label="Cerrar"
+          >✕</button>
+          <img
+            src={lightboxFoto.data}
+            alt={lightboxFoto.nombre}
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '95%', maxHeight: '85vh', objectFit: 'contain', borderRadius: '8px', boxShadow: '0 12px 40px rgba(0,0,0,0.6)', cursor: 'default' }}
+          />
+          <div style={{ marginTop: '16px', color: '#fff', textAlign: 'center', maxWidth: '90%' }}>
+            <div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '4px' }}>{lightboxFoto.nombre}</div>
+            <div style={{ fontSize: '12px', opacity: 0.7 }}>⏰ {lightboxFoto.fecha} · Toca fuera para cerrar</div>
           </div>
         </div>
       )}
