@@ -262,9 +262,10 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 const SUPABASE_URL = 'https://amsfcyosfusysywkwbah.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFtc2ZjeW9zZnVzeXN5d2tid2FoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTIwNzg5NTcsImV4cCI6MTc0MzYxNDk1N30.0R5r2_6jlJjQ_L0Zz_Zz3P_4Y5Q_8Z9X_0A_1B_2C_3D';
 
-// ANTHROPIC API CONFIGURATION
-const ANTHROPIC_API_KEY = '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';
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+// ANTHROPIC API
+// La API key vive como variable de entorno en Netlify (ANTHROPIC_API_KEY).
+// Todas las llamadas a Claude pasan por /.netlify/functions/claude-proxy
+// para mantener la key fuera del navegador.
 
 let supabaseClient = null;
 
@@ -329,11 +330,9 @@ function syncOrderToMessagingAndFinance(orden) {
 // FUNCIÓN: Leer monto de nota física con Claude
 async function readMontoFromNota(base64Image) {
   try {
-    const response = await fetch(ANTHROPIC_API_URL, {
+    const response = await fetch('/.netlify/functions/claude-proxy', {
       method: 'POST',
       headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
         'content-type': 'application/json'
       },
       body: JSON.stringify({
@@ -400,11 +399,9 @@ async function registrarAuditoria(orden, montoNota, requiresFactura = false) {
 // FUNCIÓN: Validar foto de evidencia con Claude
 async function validarFotoEvidencia(base64Image, fase, orden) {
   try {
-    const response = await fetch(ANTHROPIC_API_URL, {
+    const response = await fetch('/.netlify/functions/claude-proxy', {
       method: 'POST',
       headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
         'content-type': 'application/json'
       },
       body: JSON.stringify({
@@ -450,11 +447,9 @@ async function sugerirProximoPaso(orden, faseActual) {
     const ordenesHistorico = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
     const similares = ordenesHistorico.filter(o => o.trabajo === orden.trabajo);
 
-    const response = await fetch(ANTHROPIC_API_URL, {
+    const response = await fetch('/.netlify/functions/claude-proxy', {
       method: 'POST',
       headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
         'content-type': 'application/json'
       },
       body: JSON.stringify({
@@ -519,11 +514,9 @@ async function analizarEficiencia() {
     const hoy = new Date().toLocaleDateString('es-MX');
     const estadisticasHoy = estadisticas.filter(s => s.dia === hoy);
 
-    const response = await fetch(ANTHROPIC_API_URL, {
+    const response = await fetch('/.netlify/functions/claude-proxy', {
       method: 'POST',
       headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
         'content-type': 'application/json'
       },
       body: JSON.stringify({
@@ -2316,16 +2309,14 @@ function ProduccionIntegradaModule({ onNavigate }) {
         const base64Data = base64.includes(',') ? base64.split(',')[1] : base64;
         console.log('🔄 Base64 extraído, longitud:', base64Data.length);
 
-        // Usar Claude API con Vision para procesar la orden
-        const response = await fetch(ANTHROPIC_API_URL, {
+        // Usar Claude API con Vision para procesar la orden (via Netlify Function)
+        const response = await fetch('/.netlify/functions/claude-proxy', {
           method: 'POST',
           headers: {
-            'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2024-06-01',
             'content-type': 'application/json'
           },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-6',
+            model: 'claude-3-5-sonnet-20241022',
             max_tokens: 1000,
             messages: [{
               role: 'user',
