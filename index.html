@@ -260,7 +260,7 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 // ============================================================
 // SUPABASE & API CONFIGURATION
 const SUPABASE_URL = 'https://amsfcyosfusysywkwbah.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFtc2ZjeW9zZnVzeXN5d2tid2FoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTIwNzg5NTcsImV4cCI6MTc0MzYxNDk1N30.0R5r2_6jlJjQ_L0Zz_Zz3P_4Y5Q_8Z9X_0A_1B_2C_3D';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFtc2ZjeW9zZnVzeXN5d2t3YmFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3NTk2NTcsImV4cCI6MjA5NTMzNTY1N30.2il14ENOoHwjvcLH7XihnfPpla2iA9jJogZnF5MbAK0';
 
 // ANTHROPIC API
 // La API key vive como variable de entorno en Netlify (ANTHROPIC_API_KEY).
@@ -269,61 +269,566 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 let supabaseClient = null;
 
-async function initSupabase() {
+function initSupabase() {
   if (supabaseClient) return supabaseClient;
+  if (!window.supabase) {
+    console.warn('Supabase SDK no cargado todavía');
+    return null;
+  }
   const { createClient } = window.supabase;
-  supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    realtime: { params: { eventsPerSecond: 5 } }
+  });
   return supabaseClient;
+}
+
+// ============================================================
+// DataService — Capa única de acceso a datos
+// ============================================================
+// Patrón: SIEMPRE intentar Supabase primero. Si falla, usar localStorage.
+// Cuando vuelve la conexión, sincronizar.
+// ============================================================
+
+const DB = (() => {
+  const cacheKey = (entity) => `cache_${entity}`;
+  const pendingKey = (entity) => `pending_${entity}`;
+
+  const getCache = (entity) => {
+    try { return JSON.parse(localStorage.getItem(cacheKey(entity)) || '[]'); }
+    catch { return []; }
+  };
+  const setCache = (entity, data) => {
+    try { localStorage.setItem(cacheKey(entity), JSON.stringify(data)); }
+    catch {}
+  };
+
+  const addPending = (entity, action) => {
+    const list = JSON.parse(localStorage.getItem(pendingKey(entity)) || '[]');
+    list.push({ ...action, _pendingAt: Date.now() });
+    localStorage.setItem(pendingKey(entity), JSON.stringify(list));
+  };
+
+  const flushPending = async (entity, table) => {
+    const list = JSON.parse(localStorage.getItem(pendingKey(entity)) || '[]');
+    if (list.length === 0) return;
+    const sb = initSupabase();
+    if (!sb) return;
+    for (const action of list) {
+      try {
+        if (action.op === 'insert') await sb.from(table).insert(action.data);
+        else if (action.op === 'update') await sb.from(table).update(action.data).eq('id', action.id);
+        else if (action.op === 'delete') await sb.from(table).delete().eq('id', action.id);
+      } catch (e) {
+        console.warn('Flush pending failed:', e);
+        return; // dejar para próximo intento
+      }
+    }
+    localStorage.removeItem(pendingKey(entity));
+  };
+
+  // ---- Generic CRUD ----
+  const list = async (table, opts = {}) => {
+    const sb = initSupabase();
+    if (sb) {
+      try {
+        let q = sb.from(table).select('*');
+        if (opts.orderBy) q = q.order(opts.orderBy, { ascending: opts.ascending !== false });
+        if (opts.filter) {
+          for (const [k, v] of Object.entries(opts.filter)) q = q.eq(k, v);
+        }
+        if (opts.limit) q = q.limit(opts.limit);
+        const { data, error } = await q;
+        if (!error && data) {
+          setCache(table, data);
+          await flushPending(table, table);
+          return data;
+        }
+      } catch (e) { console.warn(`list ${table} fail:`, e.message); }
+    }
+    return getCache(table);
+  };
+
+  const upsert = async (table, row, opts = {}) => {
+    const sb = initSupabase();
+    if (sb) {
+      try {
+        const { data, error } = await sb.from(table).upsert(row, { onConflict: opts.onConflict || 'id' }).select();
+        if (!error && data) {
+          const cached = getCache(table);
+          const merged = [...cached.filter(c => c.id !== row.id), ...data];
+          setCache(table, merged);
+          return data[0];
+        }
+      } catch (e) { console.warn(`upsert ${table} fail:`, e.message); }
+    }
+    // Offline: guardar en cache + pending
+    const cached = getCache(table);
+    const updated = row.id ? cached.map(c => c.id === row.id ? row : c) : [row, ...cached];
+    if (!row.id) row.id = Date.now();
+    if (!cached.some(c => c.id === row.id)) updated.unshift(row);
+    setCache(table, updated);
+    addPending(table, { op: 'insert', data: row });
+    return row;
+  };
+
+  const update = async (table, id, patch) => {
+    const sb = initSupabase();
+    if (sb) {
+      try {
+        const { data, error } = await sb.from(table).update(patch).eq('id', id).select();
+        if (!error && data) {
+          const cached = getCache(table);
+          setCache(table, cached.map(c => c.id === id ? { ...c, ...patch } : c));
+          return data[0];
+        }
+      } catch (e) { console.warn(`update ${table} fail:`, e.message); }
+    }
+    const cached = getCache(table);
+    setCache(table, cached.map(c => c.id === id ? { ...c, ...patch } : c));
+    addPending(table, { op: 'update', id, data: patch });
+    return { id, ...patch };
+  };
+
+  const remove = async (table, id) => {
+    const sb = initSupabase();
+    if (sb) {
+      try {
+        const { error } = await sb.from(table).delete().eq('id', id);
+        if (!error) {
+          setCache(table, getCache(table).filter(c => c.id !== id));
+          return true;
+        }
+      } catch (e) { console.warn(`delete ${table} fail:`, e.message); }
+    }
+    setCache(table, getCache(table).filter(c => c.id !== id));
+    addPending(table, { op: 'delete', id });
+    return true;
+  };
+
+  // ---- Suscripción en tiempo real ----
+  const subscribe = (table, callback) => {
+    const sb = initSupabase();
+    if (!sb) return () => {};
+    const channel = sb
+      .channel(`zera_${table}_${Date.now()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table }, (payload) => {
+        // Refrescar caché y notificar
+        list(table).then(callback);
+      })
+      .subscribe();
+    return () => sb.removeChannel(channel);
+  };
+
+  // ---- Config como key-value ----
+  const getConfig = async (key, defaultVal = null) => {
+    const sb = initSupabase();
+    if (sb) {
+      try {
+        const { data, error } = await sb.from('config_lab').select('value').eq('key', key).maybeSingle();
+        if (!error && data) {
+          localStorage.setItem(`cfg_${key}`, JSON.stringify(data.value));
+          return data.value;
+        }
+      } catch {}
+    }
+    const cached = localStorage.getItem(`cfg_${key}`);
+    return cached ? JSON.parse(cached) : defaultVal;
+  };
+  const setConfig = async (key, value) => {
+    localStorage.setItem(`cfg_${key}`, JSON.stringify(value));
+    const sb = initSupabase();
+    if (sb) {
+      try {
+        await sb.from('config_lab').upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+      } catch {}
+    }
+  };
+
+  return {
+    // CRUD
+    list, upsert, update, remove, subscribe,
+    // Config
+    getConfig, setConfig,
+    // Cache directo (para fallback rápido)
+    getCache, setCache,
+    // Helpers que mantienen compatibilidad con código viejo:
+    // Estas leen Supabase + actualizan localStorage del key viejo
+    syncLegacyKey: async (table, legacyLocalStorageKey) => {
+      const data = await list(table);
+      localStorage.setItem(legacyLocalStorageKey, JSON.stringify(data));
+      return data;
+    }
+  };
+})();
+
+// Exponer globalmente para depuración
+if (typeof window !== 'undefined') window.DB = DB;
+
+// ============================================================
+// DBSync — Sincronización transparente localStorage ⇄ Supabase
+// ============================================================
+// Mantiene los localStorage keys que los módulos usan, pero los datos
+// reales viven en Supabase. Los cambios se propagan en tiempo real
+// a todos los dispositivos conectados.
+// ============================================================
+
+const DBSync = (() => {
+  // Conversores snake_case ⇄ camelCase para que las columnas BD se vean igual que en JS
+  const toCamel = (obj) => {
+    if (Array.isArray(obj)) return obj.map(toCamel);
+    if (obj && typeof obj === 'object' && obj.constructor === Object) {
+      return Object.fromEntries(Object.entries(obj).map(([k, v]) => [
+        k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
+        toCamel(v)
+      ]));
+    }
+    return obj;
+  };
+  const toSnake = (obj) => {
+    if (Array.isArray(obj)) return obj.map(toSnake);
+    if (obj && typeof obj === 'object' && obj.constructor === Object) {
+      return Object.fromEntries(Object.entries(obj).map(([k, v]) => [
+        k.replace(/([A-Z])/g, (_, c) => '_' + c.toLowerCase()),
+        toSnake(v)
+      ]));
+    }
+    return obj;
+  };
+
+  // Mapeo: localStorage key → tabla Supabase + transformer
+  // Si el localStorage es un OBJETO (no array), proveer toLs/fromLs custom.
+  const MAPPING = {
+    'produccionOrdenes':    { table: 'produccion_ordenes' },
+    'cobrosRegistro':       { table: 'cobros' },
+    'comisionesGeneradas':  { table: 'comisiones_generadas' },
+    'comisionesFidel':      { table: 'comisiones_fidel' },
+    'tarifasPrecios':       { table: 'tarifas_precios' },
+    'registroTrabajos':     { table: 'registro_trabajos' },
+    'auditoriaFinanciera':  { table: 'auditoria_financiera' },
+    'costosOrdenes':        { table: 'costos_ordenes' },
+    'gastosEscaneo':        { table: 'gastos_escaneo' },
+    'notasIA':              { table: 'notas_ia' },
+    'reglasComisiones':     { table: 'reglas_comisiones' },
+    // Salarios: en localStorage es { Rafael: 4500, Fidel: 3500 } pero en BD es array
+    'salariosBase': {
+      table: 'salarios_base',
+      toLs: (rows) => {
+        const obj = {};
+        rows.forEach(r => { obj[r.empleado] = parseFloat(r.monto) || 0; });
+        return obj;
+      },
+      fromLs: (obj) => Object.entries(obj || {}).map(([empleado, monto]) => ({
+        empleado, monto: parseFloat(monto) || 0, moneda: 'MXN'
+      }))
+    }
+  };
+
+  let initialized = false;
+  let unsubs = [];
+  const originalSetItem = typeof localStorage !== 'undefined' ? localStorage.setItem.bind(localStorage) : null;
+
+  // Disparar evento para forzar re-render en módulos que escuchen
+  const notify = (key) => {
+    try { window.dispatchEvent(new CustomEvent('zera-sync', { detail: { key } })); } catch {}
+  };
+
+  // Pull desde Supabase → localStorage
+  const pull = async (lsKey) => {
+    const conf = MAPPING[lsKey];
+    if (!conf) return;
+    const raw = await DB.list(conf.table);
+    const camelData = toCamel(raw); // convertir snake_case → camelCase
+    const lsValue = conf.toLs ? conf.toLs(camelData) : camelData;
+    // Usar el setItem original para no disparar el push (loop)
+    originalSetItem(lsKey, JSON.stringify(lsValue));
+    notify(lsKey);
+  };
+
+  // Push: lo que está en localStorage → Supabase
+  // Estrategia: leer el array entero del localStorage, hacer upsert masivo
+  const push = async (lsKey) => {
+    const conf = MAPPING[lsKey];
+    if (!conf) return;
+    let raw;
+    try { raw = JSON.parse(localStorage.getItem(lsKey) || '[]'); }
+    catch { return; }
+    let rows = conf.fromLs ? conf.fromLs(raw) : raw;
+    if (!Array.isArray(rows)) rows = [rows];
+    if (rows.length === 0) return;
+    // Convertir camelCase → snake_case para columnas de Supabase
+    rows = rows.map(r => {
+      const snake = toSnake(r);
+      // Limpiar timestamps client-side que PostgreSQL maneja
+      delete snake.created_at;
+      delete snake.updated_at;
+      return snake;
+    });
+    const sb = initSupabase();
+    if (!sb) return;
+    try {
+      const onConflict = lsKey === 'salariosBase' ? 'empleado' : 'id';
+      const { error } = await sb.from(conf.table).upsert(rows, { onConflict });
+      if (error) console.warn(`Push ${lsKey} error:`, error.message);
+    } catch (e) {
+      console.warn(`Push ${lsKey} failed:`, e.message);
+    }
+  };
+
+  // Init: pull todo desde Supabase + setup real-time + override setItem
+  const init = async () => {
+    if (initialized) return;
+    initialized = true;
+
+    // Override localStorage.setItem para hacer push automático
+    if (originalSetItem) {
+      localStorage.setItem = function(key, value) {
+        originalSetItem(key, value);
+        if (MAPPING[key]) {
+          // Push en background (no esperar)
+          push(key).catch(e => console.warn('Sync push failed:', e));
+        }
+      };
+    }
+
+    // Pull inicial: si Supabase tiene datos, los traemos; si está vacío, subimos lo de localStorage
+    await Promise.all(Object.keys(MAPPING).map(async (lsKey) => {
+      try {
+        const conf = MAPPING[lsKey];
+        const remoto = await DB.list(conf.table);
+        if (remoto && remoto.length > 0) {
+          // Hay datos en Supabase → traerlos a localStorage
+          await pull(lsKey);
+        } else {
+          // Supabase vacío → migrar lo de localStorage si existe
+          const ls = localStorage.getItem(lsKey);
+          if (ls) {
+            try {
+              const parsed = JSON.parse(ls);
+              const tieneContenido = (Array.isArray(parsed) && parsed.length > 0)
+                                     || (typeof parsed === 'object' && Object.keys(parsed).length > 0);
+              if (tieneContenido) {
+                console.log(`📤 Migrando ${lsKey} de localStorage a Supabase...`);
+                await push(lsKey);
+              }
+            } catch {}
+          }
+        }
+      } catch (e) {
+        console.warn(`Init ${lsKey} failed:`, e.message);
+      }
+    }));
+
+    // Real-time subscriptions
+    Object.entries(MAPPING).forEach(([lsKey, conf]) => {
+      const unsub = DB.subscribe(conf.table, async () => {
+        // Cuando cambia en BD, refrescar localStorage (con conversión)
+        await pull(lsKey);
+      });
+      unsubs.push(unsub);
+    });
+
+    console.log('✅ DBSync inicializado — datos en vivo entre dispositivos');
+  };
+
+  const stop = () => {
+    unsubs.forEach(u => u && u());
+    unsubs = [];
+  };
+
+  return { init, stop, pull, push, MAPPING };
+})();
+
+// Hook para que componentes se re-rendericen cuando llegan cambios remotos
+function useZeraSync(localStorageKey) {
+  const [, forceUpdate] = React.useReducer(x => x + 1, 0);
+  React.useEffect(() => {
+    const handler = (e) => {
+      if (!e.detail || !localStorageKey || e.detail.key === localStorageKey) {
+        forceUpdate();
+      }
+    };
+    window.addEventListener('zera-sync', handler);
+    return () => window.removeEventListener('zera-sync', handler);
+  }, [localStorageKey]);
 }
 
 // ============================================================
 // INTEGRACIÓN: Sincronización de órdenes entre módulos
 // ============================================================
-function syncOrderToMessagingAndFinance(orden) {
-  if (!orden) return;
+
+// Tipo de cambio default USD → MXN (configurable desde Cobros)
+function getTipoCambioMXN() {
+  const tc = parseFloat(localStorage.getItem('tipoCambioUSDMXN'));
+  return isNaN(tc) || tc <= 0 ? 17.5 : tc;
+}
+
+// Busca la tarifa más adecuada para un tipo de trabajo (matching inteligente)
+function buscarTarifaPara(tipoTrabajo) {
+  if (!tipoTrabajo) return null;
+  const tarifas = JSON.parse(localStorage.getItem('tarifasPrecios') || '[]');
+  const t = tipoTrabajo.toLowerCase().trim();
+  // 1. Match exacto
+  let tarifa = tarifas.find(x => x.tipo.toLowerCase().trim() === t);
+  if (tarifa) return tarifa;
+  // 2. Match por inclusión (Corona Zirconia → "corona zirconia" en "Corona Zirconia A2")
+  tarifa = tarifas.find(x => t.includes(x.tipo.toLowerCase().trim()) || x.tipo.toLowerCase().includes(t));
+  return tarifa || null;
+}
+
+// Calcula comisiones aplicables a un trabajo según reglas configurables
+function calcularComisionesPara(trabajo, empleadoAsignado) {
+  if (!empleadoAsignado || !trabajo) return [];
+  const reglas = JSON.parse(localStorage.getItem('reglasComisiones') || 'null');
+  // Reglas por defecto si no hay nada configurado
+  const reglasDefault = [
+    { id: 1, empleado: 'Fidel', tipoTrabajoIncluye: 'porcelana', monto: 5, moneda: 'USD', activa: true }
+  ];
+  const reglasActivas = (reglas || reglasDefault).filter(r => r.activa);
+  const tipo = (trabajo.tipo || trabajo.trabajo || '').toLowerCase();
+  const unidades = parseInt(trabajo.unidades, 10) || 1;
+  const comisiones = [];
+  reglasActivas.forEach(r => {
+    if (r.empleado.toLowerCase() !== empleadoAsignado.toLowerCase()) return;
+    const incluye = (r.tipoTrabajoIncluye || '').toLowerCase().trim();
+    if (incluye && !tipo.includes(incluye)) return;
+    const montoUnitarioMXN = r.moneda === 'USD' ? r.monto * getTipoCambioMXN() : r.monto;
+    comisiones.push({
+      reglaId: r.id,
+      empleado: r.empleado,
+      monto: r.monto,
+      moneda: r.moneda,
+      unidades,
+      montoTotal: r.monto * unidades,
+      montoTotalMXN: montoUnitarioMXN * unidades,
+      descripcion: `${r.monto} ${r.moneda} × ${unidades} ${tipo}`
+    });
+  });
+  return comisiones;
+}
+
+// Procesador maestro: cuando una orden se marca como ENTREGADA, dispara cobro + comisiones + mensajería + auditoría
+function procesarTrabajoCompletado(orden) {
+  if (!orden || orden.estado !== 'entregado') return;
 
   const ahora = new Date().toLocaleString('es-MX');
+  const ahoraISO = new Date().toISOString();
 
-  // Sincronizar a Mensajería si el estado es "enviado"
-  if (orden.estado === 'enviado' || orden.estado === 'calidad') {
-    const mensajes = JSON.parse(localStorage.getItem('mensajesHistorial') || '[]');
-    const mensajeEntrega = {
-      id: Date.now(),
-      ordenId: orden.id,
-      folio: orden.folio,
-      paciente: orden.paciente,
-      doctor: orden.doctor,
-      trabajo: orden.trabajo,
-      tipo: 'entrega',
-      estado: 'pendiente',
-      fecha: ahora,
-      usuario: 'Sistema',
-      notas: `Orden ${orden.folio} lista para entrega a ${orden.doctor}`
-    };
-    mensajes.push(mensajeEntrega);
-    localStorage.setItem('mensajesHistorial', JSON.stringify(mensajes));
+  // 1. Verificar si ya fue procesado (evitar duplicados)
+  const cobrosExistentes = JSON.parse(localStorage.getItem('cobrosRegistro') || '[]');
+  const yaProcesado = cobrosExistentes.some(c => c.ordenId === orden.id);
+  if (yaProcesado) return;
+
+  // 2. Calcular monto desde Tarifas
+  const tarifa = buscarTarifaPara(orden.trabajo);
+  const unidades = parseInt(orden.unidades, 10) || 1;
+  const montoBaseUnit = tarifa ? tarifa.costoBase : 0;
+  const monedaCobro = tarifa ? tarifa.moneda : 'MXN';
+  const montoBaseTotal = montoBaseUnit * unidades;
+
+  // 3. Generar cobro pendiente
+  const cobro = {
+    id: Date.now(),
+    ordenId: orden.id,
+    folio: orden.folio,
+    paciente: orden.paciente,
+    doctor: orden.doctor,
+    trabajo: orden.trabajo,
+    unidades: unidades,
+    tarifaUnitaria: montoBaseUnit,
+    montoBase: montoBaseTotal,
+    descuento: 0,        // editable después
+    montoFinal: montoBaseTotal,
+    moneda: monedaCobro,
+    estado: 'pendiente',
+    fechaEmision: ahora,
+    fechaEmisionISO: ahoraISO,
+    fechaVencimiento: new Date(Date.now() + 15*24*60*60*1000).toLocaleString('es-MX'),
+    metodo: null,
+    fechaCobro: null,
+    notas: tarifa ? '' : `⚠️ Tarifa no encontrada para "${orden.trabajo}". Define el monto manual.`,
+    usuario: 'Sistema'
+  };
+  cobrosExistentes.push(cobro);
+  localStorage.setItem('cobrosRegistro', JSON.stringify(cobrosExistentes));
+
+  // 4. Generar comisiones para el técnico asignado
+  const comisiones = calcularComisionesPara(orden, orden.asignado_a);
+  if (comisiones.length > 0) {
+    const comisionesExistentes = JSON.parse(localStorage.getItem('comisionesGeneradas') || '[]');
+    comisiones.forEach(c => {
+      comisionesExistentes.push({
+        id: Date.now() + Math.random(),
+        ordenId: orden.id,
+        folio: orden.folio,
+        empleado: c.empleado,
+        tipoTrabajo: orden.trabajo,
+        monto: c.monto,
+        moneda: c.moneda,
+        unidades: c.unidades,
+        montoTotal: c.montoTotal,
+        montoTotalMXN: c.montoTotalMXN,
+        descripcion: c.descripcion,
+        fecha: ahora,
+        fechaISO: ahoraISO,
+        pagada: false
+      });
+    });
+    localStorage.setItem('comisionesGeneradas', JSON.stringify(comisionesExistentes));
+
+    // Mantener compatibilidad con comisionesFidel (usado por NominaModule viejo)
+    const comisionesFidel = JSON.parse(localStorage.getItem('comisionesFidel') || '[]');
+    comisiones.filter(c => c.empleado.toLowerCase() === 'fidel').forEach(c => {
+      comisionesFidel.push({
+        ordenId: orden.id,
+        folio: orden.folio,
+        trabajo: orden.trabajo,
+        comisionTotal: c.montoTotalMXN,
+        fecha: ahora
+      });
+    });
+    localStorage.setItem('comisionesFidel', JSON.stringify(comisionesFidel));
   }
 
-  // Sincronizar a Finanzas si el estado es "enviado"
-  if (orden.estado === 'enviado' || orden.estado === 'calidad') {
-    const cobros = JSON.parse(localStorage.getItem('cobrosRegistro') || '[]');
-    const costoBase = 80; // Valor por defecto
-    const cobro = {
-      id: Date.now(),
-      ordenId: orden.id,
-      folio: orden.folio,
-      paciente: orden.paciente,
-      doctor: orden.doctor,
-      trabajo: orden.trabajo,
-      monto: costoBase * orden.unidades,
-      estado: 'pendiente',
-      fechaEmision: ahora,
-      fechaVencimiento: new Date(Date.now() + 15*24*60*60*1000).toLocaleString('es-MX'),
-      metodo: null,
-      usuario: 'Sistema'
-    };
-    cobros.push(cobro);
-    localStorage.setItem('cobrosRegistro', JSON.stringify(cobros));
+  // 5. Auditoría financiera
+  const auditoria = JSON.parse(localStorage.getItem('auditoriaFinanciera') || '[]');
+  auditoria.push({
+    id: Date.now() + Math.random(),
+    tipo: 'trabajo_completado',
+    ordenId: orden.id,
+    folio: orden.folio,
+    doctor: orden.doctor,
+    trabajo: orden.trabajo,
+    ingresoEsperado: monedaCobro === 'USD' ? montoBaseTotal * getTipoCambioMXN() : montoBaseTotal,
+    egresoComisiones: comisiones.reduce((s, c) => s + c.montoTotalMXN, 0),
+    moneda: 'MXN',
+    fecha: ahora,
+    fechaISO: ahoraISO
+  });
+  localStorage.setItem('auditoriaFinanciera', JSON.stringify(auditoria));
+
+  // 6. Notificación a mensajería (entrega pendiente)
+  const mensajes = JSON.parse(localStorage.getItem('mensajesHistorial') || '[]');
+  mensajes.push({
+    id: Date.now() + Math.random(),
+    ordenId: orden.id,
+    folio: orden.folio,
+    paciente: orden.paciente,
+    doctor: orden.doctor,
+    trabajo: orden.trabajo,
+    tipo: 'entrega',
+    estado: 'pendiente',
+    fecha: ahora,
+    usuario: 'Sistema',
+    notas: `Orden ${orden.folio} lista para entrega a ${orden.doctor}`
+  });
+  localStorage.setItem('mensajesHistorial', JSON.stringify(mensajes));
+}
+
+// Alias para compatibilidad — el código viejo llama a esta función
+function syncOrderToMessagingAndFinance(orden) {
+  if (!orden) return;
+  if (orden.estado === 'entregado') {
+    procesarTrabajoCompletado(orden);
   }
 }
 
@@ -336,7 +841,7 @@ async function readMontoFromNota(base64Image) {
         'content-type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-3-5-haiku-20241022',
         max_tokens: 200,
         messages: [{
           role: 'user',
@@ -405,7 +910,7 @@ async function validarFotoEvidencia(base64Image, fase, orden) {
         'content-type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-3-5-haiku-20241022',
         max_tokens: 300,
         messages: [{
           role: 'user',
@@ -453,7 +958,7 @@ async function sugerirProximoPaso(orden, faseActual) {
         'content-type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-3-5-haiku-20241022',
         max_tokens: 250,
         messages: [{
           role: 'user',
@@ -520,7 +1025,7 @@ async function analizarEficiencia() {
         'content-type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-3-5-haiku-20241022',
         max_tokens: 400,
         messages: [{
           role: 'user',
@@ -767,6 +1272,7 @@ const MODULES = [
   { id: 'checkin',     icon: '📍', label: 'Asistencia',      desc: 'Check-in diario', color: 'var(--mod-checkin)' },
   { id: 'mensajeria',  icon: '🚗', label: 'Mensajería',      desc: 'Recolecciones', color: 'var(--mod-mensajeria)' },
   { id: 'cobros',      icon: '💳', label: 'Cobros',          desc: 'Pagos de doctores', color: 'var(--mod-cobros)' },
+  { id: 'notas',       icon: '📒', label: 'Notas por Doctor', desc: 'Deuda y movimientos por doctor', color: 'var(--mod-cobros)' },
   { id: 'lab-externo', icon: '🔬', label: 'Lab Externo',     desc: 'Fresado y servicios externos', color: 'var(--mod-lab)' },
   { id: 'inventario',  icon: '📦', label: 'Inventario',      desc: 'Materiales', color: 'var(--mod-inventario)' },
   { id: 'tarifas',     icon: '💰', label: 'Tarifas',         desc: 'Lista de precios', color: 'var(--mod-finanzas)' },
@@ -1531,6 +2037,7 @@ const TIPOS_TRABAJO_COMUNES = [
 const COLORES_VITA = ['A1', 'A2', 'A3', 'A3.5', 'A4', 'B1', 'B2', 'B3', 'B4', 'C1', 'C2', 'C3', 'C4', 'D2', 'D3', 'D4'];
 
 function OrdenesModule({ onNavigate }) {
+  useZeraSync('registroTrabajos'); // re-render cuando cambia en cualquier dispositivo
   // Estilos compartidos (locales para evitar colisiones con otros módulos)
   const inputStyle = {
     width: '100%',
@@ -1692,7 +2199,7 @@ function OrdenesModule({ onNavigate }) {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-3-5-sonnet-20241022',
+          model: 'claude-3-5-haiku-20241022',
           max_tokens: 1200,
           messages: [{
             role: 'user',
@@ -1813,6 +2320,101 @@ REGLAS:
     });
   };
 
+  // ============================================================
+  // SINCRONIZACIÓN CON PRODUCCIÓN
+  // Cada trabajo del registro se materializa como una orden en Producción
+  // (fase 'recepcion' por defecto). Si la orden ya existe allá, se hace
+  // merge preservando estado/asignado/historial/fotos (datos de progreso).
+  // ============================================================
+  const sincronizarConProduccion = (registroOrden) => {
+    const existentes = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
+    const ahora = new Date().toLocaleString('es-MX');
+    const ordenesActualizadas = [...existentes];
+
+    registroOrden.trabajos.forEach((trabajo, idx) => {
+      const sufijo = registroOrden.trabajos.length > 1 ? `-${idx + 1}` : '';
+      const folioFinal = `${registroOrden.folio}${sufijo}`;
+
+      // Buscar si esta entrada ya existe en producción
+      const existeIdx = ordenesActualizadas.findIndex(
+        p => p.registroOrigenId === registroOrden.id && p.trabajoIndice === idx
+      );
+
+      if (existeIdx >= 0) {
+        // Merge: actualizar info pero preservar progreso
+        const previa = ordenesActualizadas[existeIdx];
+        ordenesActualizadas[existeIdx] = {
+          ...previa,
+          folio: folioFinal,
+          doctor: registroOrden.doctor,
+          paciente: registroOrden.paciente,
+          trabajo: trabajo.tipo,
+          dientes: trabajo.dientes,
+          unidades: parseInt(trabajo.unidades, 10) || 1,
+          color: trabajo.color || '',
+          notas_trabajos: registroOrden.notas || previa.notas_trabajos || ''
+        };
+      } else {
+        // Crear nueva entrada de producción
+        ordenesActualizadas.unshift({
+          id: Date.now() + idx,
+          folio: folioFinal,
+          doctor: registroOrden.doctor,
+          paciente: registroOrden.paciente,
+          trabajo: trabajo.tipo,
+          dientes: trabajo.dientes,
+          unidades: parseInt(trabajo.unidades, 10) || 1,
+          color: trabajo.color || '',
+          estado: 'recepcion',
+          asignado_a: null,
+          historial: [{
+            fase: 'recepcion',
+            fecha: ahora,
+            usuario: 'Sistema',
+            notas: `Creado automáticamente desde Registro de Trabajos (${registroOrden.folio})`
+          }],
+          fotos_evidencia: registroOrden.foto ? [{
+            nombre: `${registroOrden.folio}-orden.jpg`,
+            data: registroOrden.foto,
+            fecha: ahora
+          }] : [],
+          notas_trabajos: registroOrden.notas || '',
+          // Tracking de sincronización
+          registroOrigenId: registroOrden.id,
+          trabajoIndice: idx
+        });
+      }
+    });
+
+    // Si se editó y se quitaron trabajos, también eliminamos sus entradas en Producción
+    // (solo las que no tengan progreso; las que tienen estado != 'recepcion' se preservan con un aviso)
+    const ahoraTrabajos = registroOrden.trabajos.length;
+    const sobrantes = ordenesActualizadas.filter(
+      p => p.registroOrigenId === registroOrden.id && p.trabajoIndice >= ahoraTrabajos
+    );
+    sobrantes.forEach(s => {
+      if (s.estado === 'recepcion' && !s.asignado_a) {
+        // Sin progreso: eliminar
+        const i = ordenesActualizadas.indexOf(s);
+        if (i >= 0) ordenesActualizadas.splice(i, 1);
+      }
+      // Si tiene progreso, se queda — el usuario verá la orden huérfana en Producción
+    });
+
+    localStorage.setItem('produccionOrdenes', JSON.stringify(ordenesActualizadas));
+  };
+
+  const desincronizarDeProduccion = (registroId) => {
+    const existentes = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
+    // Solo eliminar las que están en fase 'recepcion' sin asignar; las que tienen progreso real se preservan
+    const filtradas = existentes.filter(p => {
+      if (p.registroOrigenId !== registroId) return true;
+      const sinProgreso = p.estado === 'recepcion' && !p.asignado_a;
+      return !sinProgreso;
+    });
+    localStorage.setItem('produccionOrdenes', JSON.stringify(filtradas));
+  };
+
   const guardar = () => {
     if (!form.doctor.trim() || !form.paciente.trim()) {
       setErrorMsg('Doctor y paciente son obligatorios');
@@ -1824,21 +2426,21 @@ REGLAS:
       return;
     }
 
+    let ordenFinal;
     if (editandoId) {
-      // Editar existente
-      const actualizada = registro.map(o => o.id === editandoId ? {
-        ...o,
-        folio: form.folio.trim() || o.folio,
+      const actualizada = {
+        ...registro.find(o => o.id === editandoId),
+        folio: form.folio.trim() || registro.find(o => o.id === editandoId)?.folio,
         doctor: form.doctor.trim(),
         paciente: form.paciente.trim(),
         trabajos: trabajosValidos.map(t => ({ ...t, unidades: parseInt(t.unidades, 10) || 1 })),
         notas: form.notas.trim(),
-        foto: form.fotoTemp || o.foto || null
-      } : o);
-      guardarRegistro(actualizada);
+        foto: form.fotoTemp || registro.find(o => o.id === editandoId)?.foto || null
+      };
+      guardarRegistro(registro.map(o => o.id === editandoId ? actualizada : o));
+      ordenFinal = actualizada;
     } else {
-      // Crear nueva
-      const nueva = {
+      ordenFinal = {
         id: Date.now(),
         folio: form.folio.trim() || generarFolio(),
         doctor: form.doctor.trim(),
@@ -1849,8 +2451,11 @@ REGLAS:
         fechaEntrada: new Date().toISOString(),
         origen: form.fotoTemp ? 'foto-ia' : 'manual'
       };
-      guardarRegistro([nueva, ...registro]);
+      guardarRegistro([ordenFinal, ...registro]);
     }
+
+    // 🔗 SINCRONIZAR CON PRODUCCIÓN
+    sincronizarConProduccion(ordenFinal);
 
     setModalAbierto(false);
     setModoCaptura(null);
@@ -1860,8 +2465,10 @@ REGLAS:
   };
 
   const eliminarOrden = (id) => {
-    if (!confirm('¿Eliminar esta orden del registro? No se podrá recuperar.')) return;
+    if (!confirm('¿Eliminar esta orden del registro? Las entradas en Producción que aún estén en RECEPCIÓN sin asignar también se borrarán. Las que ya tengan técnico asignado se preservarán.')) return;
     guardarRegistro(registro.filter(o => o.id !== id));
+    // 🔗 DESINCRONIZAR DE PRODUCCIÓN
+    desincronizarDeProduccion(id);
   };
 
   // ---- filtros ----
@@ -2207,9 +2814,12 @@ const PRODUCTION_PHASES = [
   { id: 'sinterizado',    label: '🔥 SINTERIZADO',     desc: 'Sintetización de piezas',      color: '#10B981' },
   { id: 'porcelana',      label: '🎨 PORCELANA',       desc: 'Aplicación de porcelana',      color: '#F472B6' },
   { id: 'calidad',        label: '✅ CALIDAD',         desc: 'Control final e inspección',   color: '#34D399' },
+  { id: 'entregar',       label: '📦 ENTREGAR',        desc: 'Listo para Kevin (mensajero)', color: '#FBBF24' },
+  { id: 'entregado',      label: '✓ ENTREGADO',        desc: 'Cobrar / comisión / archivar', color: '#9CA3AF' },
 ];
 
 function ProduccionIntegradaModule({ onNavigate }) {
+  useZeraSync(); // escucha todos los cambios remotos
   const ordenesGuardadas = localStorage.getItem('produccionOrdenes');
   const INITIAL_ORDERS = ordenesGuardadas ? JSON.parse(ordenesGuardadas) : [
     { id: 1, folio: 'ZL-0001', doctor: 'Dr. Martínez López', paciente: 'María García', trabajo: 'Corona Zirconia', dientes: '11, 12', unidades: 2, estado: 'recepcion', asignado_a: null, historial: [{ fase: 'recepcion', fecha: '2026-05-27 09:30', usuario: 'Itzel', notas: 'Ingresado manualmente' }], fotos_evidencia: [], notas_trabajos: '' },
@@ -2338,7 +2948,7 @@ function ProduccionIntegradaModule({ onNavigate }) {
             'content-type': 'application/json'
           },
           body: JSON.stringify({
-            model: 'claude-3-5-sonnet-20241022',
+            model: 'claude-3-5-haiku-20241022',
             max_tokens: 1000,
             messages: [{
               role: 'user',
@@ -2443,6 +3053,52 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
     })();
   };
 
+  // Mueve una orden a un nuevo estado y dispara los efectos automáticos correspondientes
+  const handleMoverOrden = (orderId, nuevoEstado) => {
+    const ahora = new Date();
+    const fecha = ahora.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const nuevasOrdenes = ordenes.map(o => {
+      if (o.id === orderId) {
+        return { ...o, estado: nuevoEstado, historial: [...(o.historial || []), { fase: nuevoEstado, fecha: fecha, usuario: o.asignado_a || 'Sistema', notas: `Movido a ${PRODUCTION_PHASES.find(p => p.id === nuevoEstado)?.label}` }] };
+      }
+      return o;
+    });
+    setOrdenes(nuevasOrdenes);
+    localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+    const actualizada = nuevasOrdenes.find(o => o.id === orderId);
+    if (selectedOrder && selectedOrder.id === orderId) {
+      setSelectedOrder(actualizada);
+    }
+
+    // EFECTOS AUTOMÁTICOS según fase destino:
+    if (nuevoEstado === 'sinterizado') {
+      // Enlazar con Lab Externo
+      const labItems = JSON.parse(localStorage.getItem('labExternoSinterizado') || '[]');
+      if (!labItems.some(i => i.ordenId === orderId)) {
+        labItems.unshift({
+          id: Date.now(),
+          ordenId: orderId,
+          folio: actualizada.folio,
+          doctor: actualizada.doctor,
+          paciente: actualizada.paciente,
+          trabajo: actualizada.trabajo,
+          unidades: actualizada.unidades,
+          estado: 'pendiente', // pendiente | terminado
+          costo: 5, // 5 USD por sinterizado
+          moneda: 'USD',
+          fechaEnvio: fecha,
+          fechaEnvioISO: ahora.toISOString(),
+          fechaTerminado: null
+        });
+        localStorage.setItem('labExternoSinterizado', JSON.stringify(labItems));
+      }
+    }
+
+    if (nuevoEstado === 'entregado') {
+      procesarTrabajoCompletado(actualizada);
+    }
+  };
+
   const handleDragStart = (e, order) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('orderId', order.id); };
   const handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
 
@@ -2464,12 +3120,10 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
       setOrdenes(nuevasOrdenes);
       localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
 
-      // Sincronizar con Mensajería y Finanzas si alcanza fase final
-      const ordenActualizada = nuevasOrdenes.find(o => o.id === orderId);
-      if (nuevoEstado === 'calidad') {
-        ordenActualizada.estado = 'enviado';
-        syncOrderToMessagingAndFinance(ordenActualizada);
-        localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+      // Cuando se marca como ENTREGADO, disparar cobros + comisiones + mensajería
+      if (nuevoEstado === 'entregado') {
+        const ordenActualizada = nuevasOrdenes.find(o => o.id === orderId);
+        procesarTrabajoCompletado(ordenActualizada);
       }
     }
   };
@@ -2488,12 +3142,10 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
     setOrdenes(nuevasOrdenes);
     localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
 
-    // Sincronizar con Mensajería y Finanzas si alcanza fase final
-    if (assignmentDialog.nuevoEstado === 'calidad') {
+    // Cuando se marca como ENTREGADO, disparar cobros + comisiones + mensajería
+    if (assignmentDialog.nuevoEstado === 'entregado') {
       const ordenActualizada = nuevasOrdenes.find(o => o.id === assignmentDialog.orden.id);
-      ordenActualizada.estado = 'enviado';
-      syncOrderToMessagingAndFinance(ordenActualizada);
-      localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+      procesarTrabajoCompletado(ordenActualizada);
     }
 
     setAssignmentDialog({ visible: false, orden: null, nuevoEstado: null, asignado: null });
@@ -2554,10 +3206,6 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '16px', padding: '20px', background: 'var(--bg-primary)', overflow: 'hidden' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px' }}>
         <SectionHeader title="Producción" subtitle="Arrastra órdenes entre fases | Haz clic en Paciente/Doctor para detalles" color="var(--mod-produccion)" icon="🏭" />
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <button onClick={() => setShowFormularioRecepcion(!showFormularioRecepcion)} style={{ padding: '8px 16px', background: 'var(--mod-produccion)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600 }}>➕ Nueva Orden</button>
-          {onNavigate && <button onClick={() => onNavigate('dashboard')} style={{ padding: '10px 16px', background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: '14px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>← Volver</button>}
-        </div>
       </div>
 
       {showFormularioRecepcion && (
@@ -2748,14 +3396,47 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
 
               {selectedOrder.estado === 'calidad' && (
                 <div style={{ marginBottom: '24px', padding: '16px', background: 'rgba(52, 211, 153, 0.1)', borderRadius: 'var(--radius-md)', border: '2px solid rgba(52, 211, 153, 0.3)' }}>
-                  <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#34D399', marginBottom: '12px' }}>✅ CONTROL DE CALIDAD</h3>
-                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>Esta orden está lista. Captura la foto de la nota física para finalizar:</p>
+                  <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#34D399', marginBottom: '8px' }}>✅ CONTROL DE CALIDAD</h3>
+                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>Cuando esté aprobada, pásala a "Entregar" para que Kevin la lleve. Aún NO se genera cobro ni comisión.</p>
+                  <div style={{ display: 'flex', gap: '8px', flexDirection: 'column' }}>
+                    <button
+                      onClick={() => setNotaFinancieraDialog({ ...notaFinancieraDialog, visible: true, orden: selectedOrder })}
+                      style={{ width: '100%', padding: '10px 16px', background: 'rgba(52, 211, 153, 0.2)', color: '#34D399', border: '1px solid #34D399', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+                    >
+                      📸 Capturar Nota Física (opcional)
+                    </button>
+                    <button
+                      onClick={() => handleMoverOrden(selectedOrder.id, 'entregar')}
+                      style={{ width: '100%', padding: '12px 16px', background: '#FBBF24', color: '#000', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 700, fontSize: '13px' }}
+                    >
+                      ✅ Aprobar → Mover a ENTREGAR
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {selectedOrder.estado === 'entregar' && (
+                <div style={{ marginBottom: '24px', padding: '16px', background: 'rgba(251, 191, 36, 0.1)', borderRadius: 'var(--radius-md)', border: '2px solid rgba(251, 191, 36, 0.4)' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#FBBF24', marginBottom: '8px' }}>📦 LISTA PARA ENTREGAR</h3>
+                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>Kevin debe llevar esta orden al doctor. Al confirmar la entrega se generará:<br />• Cobro pendiente para el doctor<br />• Comisión si aplica (Fidel/porcelana, etc.)<br />• Tarea para mensajería</p>
                   <button
-                    onClick={() => setNotaFinancieraDialog({ ...notaFinancieraDialog, visible: true, orden: selectedOrder })}
-                    style={{ width: '100%', padding: '12px 16px', background: '#34D399', color: '#000', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+                    onClick={() => {
+                      if (confirm('¿Confirmar que esta orden YA fue entregada al doctor? Esto generará el cobro y las comisiones.')) {
+                        handleMoverOrden(selectedOrder.id, 'entregado');
+                        setDrawerOpen(false);
+                      }
+                    }}
+                    style={{ width: '100%', padding: '14px 16px', background: '#FBBF24', color: '#000', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 700, fontSize: '13px' }}
                   >
-                    📸 Capturar Nota Física
+                    🚚 Marcar como ENTREGADO
                   </button>
+                </div>
+              )}
+
+              {selectedOrder.estado === 'entregado' && (
+                <div style={{ marginBottom: '24px', padding: '16px', background: 'rgba(156, 163, 175, 0.15)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(156, 163, 175, 0.4)' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#9CA3AF', marginBottom: '8px' }}>✓ ENTREGADA</h3>
+                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: 0 }}>Esta orden ya fue entregada. El cobro está en <strong>Cobros</strong>, la comisión (si aplica) en <strong>Nómina</strong>.</p>
                 </div>
               )}
 
@@ -3017,21 +3698,99 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
 }
 
 function CheckinModule({ currentUser, onNavigate }) {
+  useZeraSync('checkinData');
   const [checkinLocation, setCheckinLocation] = useState(null);
   const [checkinTime, setCheckinTime] = useState(null);
   const [checkoutTime, setCheckoutTime] = useState(null);
   const [gpsEnabled, setGpsEnabled] = useState(false);
   const [horasHoy, setHorasHoy] = useState(0);
 
+  // Cargar registros guardados de check-in (de localStorage / Supabase)
+  const CHECKIN_DATA = React.useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem('checkinData') || '[]');
+    } catch {
+      return [];
+    }
+  }, []);
+
   const allTecnicos = ['Rafael','Aram','Fidel','Kevin','Montserrat'];
   const isAdmin = currentUser && (currentUser.id === 'itzel' || currentUser.id === 'montserrat');
   const tecnicos = isAdmin ? allTecnicos : allTecnicos.filter(t => t.toLowerCase() === (currentUser?.name || '').toLowerCase());
-  const dias = ['Lun 19','Mar 20','Mié 21','Jue 22','Vie 23','Sáb 24'];
+
+  // Generar los 6 días de la semana actual dinámicamente
+  const dias = React.useMemo(() => {
+    const hoy = new Date();
+    const lunes = new Date(hoy);
+    const dow = hoy.getDay(); // 0=domingo, 1=lunes
+    const diff = dow === 0 ? -6 : 1 - dow;
+    lunes.setDate(hoy.getDate() + diff);
+    const result = [];
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(lunes);
+      d.setDate(lunes.getDate() + i);
+      const nombre = ['Lun','Mar','Mié','Jue','Vie','Sáb'][i];
+      result.push(`${nombre} ${d.getDate()}`);
+    }
+    return result;
+  }, []);
+
   const getRecord = (nombre, dia) => CHECKIN_DATA.find(c => c.nombre === nombre && c.dia === dia);
   const totalHoras = (nombre) => {
-    const records = CHECKIN_DATA.filter(c => c.nombre === nombre && c.horas !== '0:00');
-    return records.reduce((sum, r) => { const [h,m] = r.horas.split(':').map(Number); return sum + h + m/60; }, 0).toFixed(1);
+    const records = CHECKIN_DATA.filter(c => c.nombre === nombre && c.horas && c.horas !== '0:00');
+    if (records.length === 0) return '0.0';
+    return records.reduce((sum, r) => {
+      const [h, m] = r.horas.split(':').map(Number);
+      return sum + h + m / 60;
+    }, 0).toFixed(1);
   };
+
+  // Día corto: "Lun 28"
+  const diaCortoHoy = () => {
+    const hoy = new Date();
+    const nombres = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+    return `${nombres[hoy.getDay()]} ${hoy.getDate()}`;
+  };
+
+  // Calcular horas trabajadas entre entrada/salida (HH:MM)
+  const calcularHoras = (entrada, salida) => {
+    if (!entrada || !salida) return '0:00';
+    const [hci, mci] = entrada.split(':').map(Number);
+    const [hco, mco] = salida.split(':').map(Number);
+    const mins = Math.max(0, (hco * 60 + mco) - (hci * 60 + mci));
+    return `${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')}`;
+  };
+
+  // Guardar en checkinData unificado (entrada/salida)
+  const guardarRegistro = (tipo, hora, gpsOk) => {
+    const data = JSON.parse(localStorage.getItem('checkinData') || '[]');
+    const dia = diaCortoHoy();
+    const idx = data.findIndex(c => c.nombre === currentUser?.name && c.dia === dia);
+    if (idx >= 0) {
+      data[idx][tipo] = hora;
+      if (gpsOk !== undefined) data[idx].gps = gpsOk;
+      if (tipo === 'salida') data[idx].horas = calcularHoras(data[idx].entrada, hora);
+    } else {
+      const nuevo = { id: Date.now(), nombre: currentUser?.name || 'Usuario', dia, entrada: null, salida: null, horas: '0:00', gps: !!gpsOk, fecha: new Date().toISOString() };
+      nuevo[tipo] = hora;
+      data.push(nuevo);
+    }
+    localStorage.setItem('checkinData', JSON.stringify(data));
+  };
+
+  // Pre-cargar estado del registro de hoy si existe
+  React.useEffect(() => {
+    const data = JSON.parse(localStorage.getItem('checkinData') || '[]');
+    const hoy = data.find(c => c.nombre === currentUser?.name && c.dia === diaCortoHoy());
+    if (hoy) {
+      if (hoy.entrada) { setCheckinTime(hoy.entrada); setGpsEnabled(true); }
+      if (hoy.salida) {
+        setCheckoutTime(hoy.salida);
+        const [h, m] = (hoy.horas || '0:00').split(':').map(Number);
+        setHorasHoy(parseFloat((h + m / 60).toFixed(1)));
+      }
+    }
+  }, [currentUser?.name]);
 
   const handleGpsCheckin = () => {
     if (navigator.geolocation) {
@@ -3039,38 +3798,41 @@ function CheckinModule({ currentUser, onNavigate }) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const { latitude, longitude } = position.coords;
-          const distance = Math.sqrt(Math.pow(latitude - 32.5149, 2) + Math.pow(longitude - (-117.0382), 2)) * 111; // aprox km
-          const isNearLab = distance < 2; // dentro de 2km del lab
-          const ahora = new Date().toLocaleTimeString();
+          const distance = Math.sqrt(Math.pow(latitude - 32.5149, 2) + Math.pow(longitude - (-117.0382), 2)) * 111;
+          const isNearLab = distance < 2;
+          const ahora = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
           setCheckinLocation({ lat: latitude, lon: longitude, near: isNearLab, distance: distance.toFixed(1) });
           setCheckinTime(ahora);
-          localStorage.setItem(`checkin_${currentUser?.name}_${new Date().toLocaleDateString('es-MX')}`, ahora);
+          guardarRegistro('entrada', ahora, isNearLab);
           alert(`✅ Check-in registrado a las ${ahora}\n${isNearLab ? '📍 Ubicación: Laboratorio ✓' : `📍 Ubicación: ${distance.toFixed(1)}km del laboratorio (⚠️ revisar)`}`);
         },
         () => {
-          alert('No se pudo obtener la ubicación. Usa el check-in manual.');
-          setGpsEnabled(false);
+          // GPS denegado: registrar igualmente sin GPS
+          const ahora = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+          setCheckinTime(ahora);
+          guardarRegistro('entrada', ahora, false);
+          alert(`✅ Check-in registrado a las ${ahora} (sin GPS)`);
         }
       );
     } else {
-      alert('GPS no disponible en este navegador');
+      const ahora = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+      setCheckinTime(ahora);
+      guardarRegistro('entrada', ahora, false);
+      alert(`✅ Check-in registrado a las ${ahora} (GPS no disponible)`);
+      setGpsEnabled(true);
     }
   };
 
   const handleGpsCheckout = () => {
-    const ahora = new Date();
-    const horaCheckout = ahora.toLocaleTimeString();
+    const horaCheckout = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
     setCheckoutTime(horaCheckout);
-    localStorage.setItem(`checkout_${currentUser?.name}_${ahora.toLocaleDateString('es-MX')}`, horaCheckout);
+    guardarRegistro('salida', horaCheckout);
 
-    // Calcular horas trabajadas
     let horasTrabajadas = 0;
     if (checkinTime) {
       const [hci, mci] = checkinTime.split(':').map(Number);
       const [hco, mco] = horaCheckout.split(':').map(Number);
-      const minutosCheckin = hci * 60 + mci;
-      const minutosCheckout = hco * 60 + mco;
-      const diferencia = Math.max(0, minutosCheckout - minutosCheckin) / 60;
+      const diferencia = Math.max(0, (hco * 60 + mco) - (hci * 60 + mci)) / 60;
       horasTrabajadas = parseFloat(diferencia.toFixed(1));
       setHorasHoy(horasTrabajadas);
     }
@@ -3333,342 +4095,340 @@ const COBROS_DATA = [
   { orden:null, doctor:null, paciente:null, trabajo:null, monto:500, moneda:'USD', metodo:'efectivo', nota_firmada:false, confirmado:true },
 ];
 
+// ============================================================
+// MÓDULO COBROS - Sistema integrado de cobros
+// Lee cobrosRegistro (poblado por procesarTrabajoCompletado al
+// llegar un trabajo a "calidad"). Permite cobrar con descuentos.
+// ============================================================
+
 function CobrosModule({ onNavigate }) {
-  const [showAI, setShowAI] = useState(false);
-  const [showRegistrar, setShowRegistrar] = useState(false);
-  const [showTC, setShowTC] = useState(false);
-  const [aiStep, setAiStep] = useState('upload');
-  const [aiResult, setAiResult] = useState(null);
-  const [nuevoPago, setNuevoPago] = useState({ orden:'', doctor:'', paciente:'', monto:'', metodo:'efectivo', moneda:'MXN' });
-  const [doctorInputOpen, setDoctorInputOpen] = useState(false);
-  const [doctorSearch, setDoctorSearch] = useState('');
-  const [tipoCambio, setTipoCambio] = useState(17.5);
-  const [fileRef, setFileRef] = useState(useRef(null));
-  const [filterDoctor, setFilterDoctor] = useState('todos');
-  const [filterDateFrom, setFilterDateFrom] = useState('');
-  const [filterDateTo, setFilterDateTo] = useState('');
-  const [archivedFromProduccion, setArchivedFromProduccion] = useState([]);
-  const [registroTrabajo, setRegistroTrabajo] = useState('');
-  const [registroMontoOverride, setRegistroMontoOverride] = useState('');
-  const [registroMetodo, setRegistroMetodo] = useState('efectivo');
-  const [registroMoneda, setRegistroMoneda] = useState('MXN');
-
-  useEffect(() => {
-    const archived = JSON.parse(localStorage.getItem('archivedProduccionItems') || '[]');
-    setArchivedFromProduccion(archived);
-  }, []);
-
-  const doctoresOptions = SAMPLE_DOCTORS.map(d => d.nombre);
-  const filteredDoctores = doctorSearch.trim() ? doctoresOptions.filter(d => d.toLowerCase().includes(doctorSearch.toLowerCase())) : doctoresOptions;
-
-  const handleAIFileUpload = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setAiStep('scanning');
-    setTimeout(() => {
-      setAiResult({ doctor:'Dra. Ramírez', paciente:'María López', trabajos:[{desc:'Corona #14',monto:2800},{desc:'Incrustación #15',monto:1500}], total:4300, moneda:'MXN', notaNum:'4523', ordenMatch:'ZL-0041', confianza:94 });
-      setAiStep('result');
-    }, 1500);
+  useZeraSync('cobrosRegistro');
+  const [cobros, setCobros] = React.useState(() => {
+    return JSON.parse(localStorage.getItem('cobrosRegistro') || '[]');
+  });
+  const guardarCobros = (nuevos) => {
+    setCobros(nuevos);
+    localStorage.setItem('cobrosRegistro', JSON.stringify(nuevos));
   };
 
+  const [tipoCambio, setTipoCambio] = React.useState(() => {
+    const tc = parseFloat(localStorage.getItem('tipoCambioUSDMXN'));
+    return isNaN(tc) || tc <= 0 ? 17.5 : tc;
+  });
+
+  // Filtros
+  const [filtroEstado, setFiltroEstado] = React.useState('pendiente'); // pendiente | cobrado | todos
+  const [filtroDoctor, setFiltroDoctor] = React.useState('todos');
+  const [busqueda, setBusqueda] = React.useState('');
+
+  // Modal de cobrar
+  const [modal, setModal] = React.useState(null); // { cobro, descuento, metodo, notas }
+  const [modalManual, setModalManual] = React.useState(false);
+  const [nuevoManual, setNuevoManual] = React.useState({
+    folio: '', doctor: '', paciente: '', trabajo: '', monto: 0, moneda: 'MXN', notas: ''
+  });
+
+  const recargar = () => {
+    setCobros(JSON.parse(localStorage.getItem('cobrosRegistro') || '[]'));
+  };
+
+  // ---- Filtros calculados ----
+  const cobrosFiltrados = React.useMemo(() => {
+    return cobros.filter(c => {
+      if (filtroEstado !== 'todos' && c.estado !== filtroEstado) return false;
+      if (filtroDoctor !== 'todos' && c.doctor !== filtroDoctor) return false;
+      if (busqueda.trim()) {
+        const q = busqueda.toLowerCase();
+        const m = [c.folio, c.doctor, c.paciente, c.trabajo].some(v => (v || '').toLowerCase().includes(q));
+        if (!m) return false;
+      }
+      return true;
+    }).sort((a, b) => new Date(b.fechaEmisionISO || b.fechaEmision) - new Date(a.fechaEmisionISO || a.fechaEmision));
+  }, [cobros, filtroEstado, filtroDoctor, busqueda]);
+
+  const doctoresUnicos = React.useMemo(() => {
+    return Array.from(new Set(cobros.map(c => c.doctor).filter(Boolean))).sort();
+  }, [cobros]);
+
+  // ---- KPIs ----
+  const pendientes = cobros.filter(c => c.estado === 'pendiente');
+  const cobrados = cobros.filter(c => c.estado === 'cobrado');
+  const totalPendiente = pendientes.reduce((s, c) => {
+    const m = (c.montoFinal !== undefined ? c.montoFinal : c.monto) || 0;
+    return s + (c.moneda === 'USD' ? m * tipoCambio : m);
+  }, 0);
+  const totalCobrado = cobrados.reduce((s, c) => {
+    const m = (c.montoFinal !== undefined ? c.montoFinal : c.monto) || 0;
+    return s + (c.moneda === 'USD' ? m * tipoCambio : m);
+  }, 0);
+
+  // ---- handlers ----
+  const abrirCobro = (cobro) => {
+    setModal({
+      cobro,
+      descuento: cobro.descuento || 0,
+      metodo: cobro.metodo || 'efectivo',
+      notas: cobro.notas || ''
+    });
+  };
+
+  const confirmarCobro = () => {
+    if (!modal) return;
+    const monto = (modal.cobro.montoBase || modal.cobro.monto || 0) - (parseFloat(modal.descuento) || 0);
+    if (monto < 0) { alert('El descuento no puede ser mayor al monto base'); return; }
+    const actualizada = cobros.map(c => c.id === modal.cobro.id ? {
+      ...c,
+      descuento: parseFloat(modal.descuento) || 0,
+      montoFinal: monto,
+      metodo: modal.metodo,
+      notas: modal.notas,
+      estado: 'cobrado',
+      fechaCobro: new Date().toLocaleString('es-MX'),
+      fechaCobroISO: new Date().toISOString()
+    } : c);
+    guardarCobros(actualizada);
+
+    // Marcar la comisión asociada como pagable (queda pendiente de pago en Nómina)
+    setModal(null);
+  };
+
+  const revertirCobro = (id) => {
+    if (!confirm('¿Marcar este cobro como pendiente de nuevo?')) return;
+    guardarCobros(cobros.map(c => c.id === id ? { ...c, estado: 'pendiente', fechaCobro: null, fechaCobroISO: null } : c));
+  };
+
+  const eliminarCobro = (id) => {
+    if (!confirm('¿Eliminar este cobro? Si vino de un trabajo en producción, se regenerará si vuelve a llegar a calidad.')) return;
+    guardarCobros(cobros.filter(c => c.id !== id));
+  };
+
+  const guardarManual = () => {
+    if (!nuevoManual.doctor.trim() || !nuevoManual.paciente.trim() || !nuevoManual.monto) {
+      alert('Doctor, paciente y monto son obligatorios');
+      return;
+    }
+    const cobro = {
+      id: Date.now(),
+      ordenId: null,
+      folio: nuevoManual.folio.trim() || `MAN-${Date.now().toString().slice(-4)}`,
+      paciente: nuevoManual.paciente.trim(),
+      doctor: nuevoManual.doctor.trim(),
+      trabajo: nuevoManual.trabajo.trim() || 'Manual',
+      unidades: 1,
+      montoBase: parseFloat(nuevoManual.monto) || 0,
+      descuento: 0,
+      montoFinal: parseFloat(nuevoManual.monto) || 0,
+      moneda: nuevoManual.moneda,
+      estado: 'pendiente',
+      fechaEmision: new Date().toLocaleString('es-MX'),
+      fechaEmisionISO: new Date().toISOString(),
+      fechaVencimiento: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toLocaleString('es-MX'),
+      metodo: null,
+      fechaCobro: null,
+      notas: nuevoManual.notas.trim(),
+      usuario: 'Manual'
+    };
+    guardarCobros([cobro, ...cobros]);
+    setNuevoManual({ folio: '', doctor: '', paciente: '', trabajo: '', monto: 0, moneda: 'MXN', notas: '' });
+    setModalManual(false);
+  };
+
+  const actualizarTipoCambio = (v) => {
+    const num = parseFloat(v) || 0;
+    setTipoCambio(num);
+    localStorage.setItem('tipoCambioUSDMXN', String(num));
+  };
+
+  // ---- Estilos ----
+  const cardStyle = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 16, marginBottom: 12 };
+  const inputBoxStyle = { width: '100%', padding: '10px 12px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', fontSize: 13, boxSizing: 'border-box' };
+  const labelStyle = { display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.5px' };
+
   return (
-    <div style={{ animation:'fadeIn 0.3s' }}>
-      <SectionHeader title="Cobros y Pagos" subtitle="Controla que cada trabajo se cobre — nada se pierde" color="var(--mod-cobros)" icon="💳">
-        <button onClick={()=>{setShowAI(!showAI);setShowRegistrar(false);setShowTC(false);setAiStep('upload');setAiResult(null);}} style={{ padding:'12px 20px', background:showAI?'var(--mod-cobros)':'var(--bg-card)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:showAI?'#fff':'var(--text-secondary)', cursor:'pointer', fontSize:14, fontWeight:700 }}>🤖 Escanear nota</button>
-        <button onClick={()=>{setShowRegistrar(!showRegistrar);setShowAI(false);setShowTC(false);}} style={{ padding:'12px 20px', background:showRegistrar?'var(--mod-cobros)':'var(--bg-card)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:showRegistrar?'#fff':'var(--text-secondary)', cursor:'pointer', fontSize:14, fontWeight:700 }}>+ Registrar pago</button>
-        <button onClick={()=>{setShowTC(!showTC);setShowAI(false);setShowRegistrar(false);}} style={{ padding:'12px 20px', background:showTC?'var(--mod-cobros)':'var(--bg-card)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:showTC?'#fff':'var(--text-secondary)', cursor:'pointer', fontSize:14, fontWeight:700 }}>💵 Tipo cambio</button>
+    <div style={{ animation: 'fadeIn 0.3s' }}>
+      <SectionHeader title="Cobros y Pagos" subtitle="Cobros generados automáticamente cuando un trabajo llega a calidad" color="var(--mod-cobros)" icon="💳">
+        <button onClick={() => setModalManual(true)} style={{ padding: '12px 20px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>+ Cobro manual</button>
+        <button onClick={recargar} style={{ padding: '12px 20px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>🔄 Recargar</button>
       </SectionHeader>
 
-      {showRegistrar && (
-        <SubSection title="Registrar un pago nuevo" color="var(--mod-cobros)" description="Llena los datos del pago que recibiste">
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }}>
-            <Field label="Folio de orden"><input value={nuevoPago.orden} onChange={e=>setNuevoPago({...nuevoPago,orden:e.target.value})} placeholder="ZL-XXXX" /></Field>
+      {/* KPIs */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 20 }}>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Pendiente de cobro</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--warning)' }}>${totalPendiente.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{pendientes.length} cobro{pendientes.length !== 1 ? 's' : ''}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Cobrado</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--success)' }}>${totalCobrado.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{cobrados.length} pagos recibidos</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Tipo de cambio</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>1 USD =</span>
+            <input type="number" step="0.1" value={tipoCambio} onChange={(e) => actualizarTipoCambio(e.target.value)} style={{ ...inputBoxStyle, width: 80, padding: '6px 8px', fontSize: 14, fontWeight: 700 }} />
+            <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>MXN</span>
+          </div>
+        </div>
+      </div>
 
-            {/* Doctor con autocomplete */}
-            <Field label="Doctor (nuevo o existente)">
-              <div style={{ position:'relative' }}>
-                <input
-                  value={nuevoPago.doctor}
-                  onChange={e=>{setNuevoPago({...nuevoPago,doctor:e.target.value}); setDoctorSearch(e.target.value); setDoctorInputOpen(true);}}
-                  onFocus={()=>setDoctorInputOpen(true)}
-                  placeholder="Escribe nombre o selecciona"
-                  style={{ width:'100%' }}
-                />
-                {doctorInputOpen && doctorSearch && filteredDoctores.length > 0 && (
-                  <div style={{ position:'absolute', top:'100%', left:0, right:0, background:'var(--bg-card)', border:'1px solid var(--border-subtle)', borderTop:'none', borderRadius:'0 0 var(--radius-md) var(--radius-md)', maxHeight:'150px', overflowY:'auto', zIndex:10 }}>
-                    {filteredDoctores.map((doc,i) => (
-                      <div key={i} onClick={()=>{setNuevoPago({...nuevoPago,doctor:doc}); setDoctorInputOpen(false); setDoctorSearch('');}} style={{ padding:'10px 14px', borderBottom:'1px solid var(--border-subtle)', cursor:'pointer', fontSize:13, background:'transparent', transition:'all 0.15s' }}
-                        onMouseEnter={e=>e.currentTarget.style.background='var(--bg-primary)'}
-                        onMouseLeave={e=>e.currentTarget.style.background='transparent'}
-                      >
-                        {doc}
-                      </div>
-                    ))}
+      {/* Filtros */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+        <input type="text" placeholder="🔍 Buscar por folio, doctor, paciente..." value={busqueda} onChange={(e) => setBusqueda(e.target.value)} style={{ ...inputBoxStyle, flex: '1 1 240px', minWidth: 200 }} />
+        <select value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)} style={{ ...inputBoxStyle, width: 150, cursor: 'pointer' }}>
+          <option value="pendiente">⏳ Pendientes</option>
+          <option value="cobrado">✅ Cobrados</option>
+          <option value="todos">📋 Todos</option>
+        </select>
+        <select value={filtroDoctor} onChange={(e) => setFiltroDoctor(e.target.value)} style={{ ...inputBoxStyle, width: 200, cursor: 'pointer' }}>
+          <option value="todos">👨‍⚕️ Todos los doctores</option>
+          {doctoresUnicos.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
+      </div>
+
+      {/* Lista de cobros */}
+      {cobrosFiltrados.length === 0 ? (
+        <div style={{ ...cardStyle, textAlign: 'center', padding: 40 }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>💳</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>
+            {cobros.length === 0 ? 'Aún no hay cobros' : 'Sin cobros que coincidan con el filtro'}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            {cobros.length === 0 ? 'Los cobros aparecerán automáticamente cuando los trabajos lleguen a la fase ✅ Calidad en Producción.' : 'Cambia el filtro o búsqueda.'}
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 10 }}>
+          {cobrosFiltrados.map(c => {
+            const monto = c.montoFinal !== undefined ? c.montoFinal : c.monto;
+            const montoBase = c.montoBase || c.monto;
+            const tieneDescuento = c.descuento && c.descuento > 0;
+            return (
+              <div key={c.id} style={cardStyle}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--accent-blue)' }}>{c.folio}</span>
+                      {c.estado === 'pendiente'
+                        ? <span style={{ padding: '2px 8px', background: 'rgba(245,158,11,0.2)', color: 'var(--warning)', borderRadius: 12, fontSize: 11, fontWeight: 700 }}>⏳ Pendiente</span>
+                        : <span style={{ padding: '2px 8px', background: 'rgba(52,211,153,0.2)', color: 'var(--success)', borderRadius: 12, fontSize: 11, fontWeight: 700 }}>✅ Cobrado</span>
+                      }
+                      {!c.ordenId && <span style={{ padding: '2px 8px', background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)', borderRadius: 12, fontSize: 10 }}>Manual</span>}
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{c.paciente} — {c.trabajo}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{c.doctor} · Emisión: {c.fechaEmision}</div>
+                    {c.notas && (
+                      <div style={{ marginTop: 6, fontSize: 12, color: 'var(--warning)', background: 'rgba(245,158,11,0.1)', padding: '6px 10px', borderRadius: 6 }}>📝 {c.notas}</div>
+                    )}
+                    {c.estado === 'cobrado' && (
+                      <div style={{ marginTop: 6, fontSize: 11, color: 'var(--success)' }}>Cobrado {c.fechaCobro} con {c.metodo}</div>
+                    )}
                   </div>
-                )}
-              </div>
-            </Field>
-
-            <Field label="Paciente"><input value={nuevoPago.paciente} onChange={e=>setNuevoPago({...nuevoPago,paciente:e.target.value})} placeholder="Nombre" /></Field>
-            <Field label="Monto"><input type="number" value={nuevoPago.monto} onChange={e=>setNuevoPago({...nuevoPago,monto:e.target.value})} placeholder="$0" /></Field>
-            <Field label="Método de pago"><select value={nuevoPago.metodo} onChange={e=>setNuevoPago({...nuevoPago,metodo:e.target.value})}><option value="efectivo">💵 Efectivo</option><option value="tarjeta">💳 Tarjeta</option><option value="transferencia">🏦 Transferencia</option></select></Field>
-            <Field label="Moneda"><select value={nuevoPago.moneda} onChange={e=>setNuevoPago({...nuevoPago,moneda:e.target.value})}><option value="MXN">MXN (Pesos)</option><option value="USD">USD (Dólares)</option></select></Field>
-          </div>
-          <button onClick={()=>{alert('Pago registrado exitosamente: $'+nuevoPago.monto+' '+nuevoPago.moneda); setShowRegistrar(false); setNuevoPago({orden:'',doctor:'',paciente:'',monto:'',metodo:'efectivo',moneda:'MXN'}); setDoctorInputOpen(false);}} style={{ marginTop:8, padding:'14px 28px', background:'var(--mod-cobros)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', cursor:'pointer', fontSize:15, fontWeight:700 }}>Registrar pago</button>
-        </SubSection>
-      )}
-
-      {showAI && (
-        <SubSection title="Cobro inteligente con IA" color="var(--mod-cobros)" description="Sube una foto de la nota y detectamos montos, trabajos y doctor">
-          {aiStep==='upload' && (
-            <div style={{ border:'2px dashed var(--mod-cobros)', borderRadius:'var(--radius-lg)', padding:40, textAlign:'center', background:'rgba(239,68,68,0.04)', cursor:'pointer' }}
-              onClick={()=>fileRef.current?.click()}
-              onDragOver={e=>{e.preventDefault(); e.currentTarget.style.background='rgba(239,68,68,0.08)'; e.currentTarget.style.borderColor='var(--mod-cobros)';}}
-              onDragLeave={e=>{e.currentTarget.style.background='rgba(239,68,68,0.04)'; e.currentTarget.style.borderColor='var(--mod-cobros)';}}
-              onDrop={e=>{e.preventDefault(); if(e.dataTransfer.files[0]) handleAIFileUpload({target:{files:e.dataTransfer.files}});}}
-            >
-              <input ref={fileRef} type="file" accept="image/*" onChange={handleAIFileUpload} style={{ display:'none' }} />
-              <div style={{ fontSize:40, marginBottom:8 }}>📸</div>
-              <div style={{ fontSize:15, fontWeight:700, color:'var(--mod-cobros)' }}>Toma foto o arrastra la nota aquí</div>
-              <div style={{ fontSize:13, color:'var(--text-muted)', marginTop:4 }}>La IA detecta montos, doctor y trabajos automáticamente</div>
-            </div>
-          )}
-          {aiStep==='scanning' && (
-            <div style={{ textAlign:'center', padding:30 }}>
-              <div style={{ fontSize:40, marginBottom:12 }}>🔍</div>
-              <div style={{ fontSize:15, fontWeight:700, color:'var(--mod-cobros)' }}>Analizando nota con IA...</div>
-              <div style={{ width:200, height:6, background:'var(--bg-primary)', borderRadius:3, margin:'16px auto', overflow:'hidden' }}><div style={{ width:'60%', height:'100%', background:'var(--mod-cobros)', borderRadius:3, animation:'blink 1s infinite' }} /></div>
-            </div>
-          )}
-          {aiStep==='result' && aiResult && (
-            <div>
-              <div style={{ display:'flex', gap:8, marginBottom:12 }}>
-                <Badge color="var(--success)">Confianza: {aiResult.confianza}%</Badge>
-                <Badge color="var(--mod-ordenes)">Orden: {aiResult.ordenMatch}</Badge>
-              </div>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-                <div style={{ background:'var(--bg-primary)', borderRadius:'var(--radius-md)', padding:14 }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:'var(--text-muted)', marginBottom:8 }}>DATOS DETECTADOS</div>
-                  <div style={{ fontSize:14, marginBottom:4 }}>Doctor: <strong>{aiResult.doctor}</strong></div>
-                  <div style={{ fontSize:14, marginBottom:4 }}>Paciente: <strong>{aiResult.paciente}</strong></div>
-                  <div style={{ fontSize:14 }}>Nota #: <strong>{aiResult.notaNum}</strong></div>
-                </div>
-                <div style={{ background:'var(--bg-primary)', borderRadius:'var(--radius-md)', padding:14 }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:'var(--text-muted)', marginBottom:8 }}>TRABAJOS DETECTADOS</div>
-                  {aiResult.trabajos.map((t,i) => <div key={i} style={{ display:'flex', justifyContent:'space-between', fontSize:14, marginBottom:4 }}><span>{t.desc}</span><strong>${t.monto.toLocaleString()}</strong></div>)}
-                  <div style={{ borderTop:'1px solid var(--border-subtle)', paddingTop:8, marginTop:8, display:'flex', justifyContent:'space-between', fontSize:18, fontWeight:900, color:'var(--success)' }}><span>Total</span><span>${aiResult.total.toLocaleString()}</span></div>
+                  <div style={{ textAlign: 'right', flex: '0 0 auto', minWidth: 160 }}>
+                    {tieneDescuento && (
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', textDecoration: 'line-through' }}>${montoBase?.toLocaleString('es-MX')} {c.moneda}</div>
+                    )}
+                    <div style={{ fontSize: 22, fontWeight: 900, color: c.estado === 'cobrado' ? 'var(--success)' : 'var(--mod-cobros)' }}>
+                      ${monto?.toLocaleString('es-MX', { maximumFractionDigits: 2 })} {c.moneda}
+                    </div>
+                    {tieneDescuento && (
+                      <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 2 }}>Desc: ${c.descuento.toLocaleString('es-MX')}</div>
+                    )}
+                    {c.moneda === 'USD' && (
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>≈ ${(monto * tipoCambio).toLocaleString('es-MX', { maximumFractionDigits: 0 })} MXN</div>
+                    )}
+                    <div style={{ display: 'flex', gap: 6, marginTop: 10, justifyContent: 'flex-end' }}>
+                      {c.estado === 'pendiente' ? (
+                        <button onClick={() => abrirCobro(c)} style={{ padding: '8px 14px', background: 'var(--mod-cobros)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>💵 Cobrar</button>
+                      ) : (
+                        <button onClick={() => revertirCobro(c.id)} style={{ padding: '8px 14px', background: 'rgba(245,158,11,0.15)', color: 'var(--warning)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>↺ Revertir</button>
+                      )}
+                      <button onClick={() => eliminarCobro(c.id)} style={{ padding: '8px 10px', background: 'rgba(239,68,68,0.15)', color: '#EF4444', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 14 }}>🗑️</button>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div style={{ display:'flex', gap:8, marginTop:14, justifyContent:'flex-end' }}>
-                <button onClick={()=>{setAiStep('upload');setAiResult(null);}} style={{ padding:'10px 18px', background:'var(--bg-card)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:'var(--text-secondary)', cursor:'pointer', fontSize:13 }}>Escanear otra</button>
-                <button onClick={()=>{alert('Cobro registrado'); setShowAI(false);}} style={{ padding:'10px 20px', background:'var(--mod-cobros)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', cursor:'pointer', fontSize:14, fontWeight:700 }}>Confirmar y registrar</button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* MODAL — Cobrar */}
+      {modal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', padding: 24, maxWidth: 520, width: '100%', border: '2px solid var(--mod-cobros)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>💵 Cobrar {modal.cobro.folio}</h2>
+              <button onClick={() => setModal(null)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', fontSize: 20, cursor: 'pointer' }}>✕</button>
+            </div>
+
+            <div style={{ background: 'var(--bg-card)', padding: 14, borderRadius: 'var(--radius-md)', marginBottom: 16 }}>
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 4 }}><strong>{modal.cobro.paciente}</strong> — {modal.cobro.trabajo}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{modal.cobro.doctor}</div>
+              <div style={{ fontSize: 14, marginTop: 8 }}>Monto base: <strong>${(modal.cobro.montoBase || modal.cobro.monto)?.toLocaleString('es-MX')} {modal.cobro.moneda}</strong></div>
+            </div>
+
+            <div style={{ display: 'grid', gap: 12, marginBottom: 16 }}>
+              <div>
+                <label style={labelStyle}>Descuento aplicado ({modal.cobro.moneda})</label>
+                <input type="number" min="0" step="0.5" value={modal.descuento} onChange={(e) => setModal({ ...modal, descuento: e.target.value })} placeholder="0" style={inputBoxStyle} />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Total a cobrar: <strong style={{ color: 'var(--success)' }}>${((modal.cobro.montoBase || modal.cobro.monto || 0) - (parseFloat(modal.descuento) || 0)).toLocaleString('es-MX')} {modal.cobro.moneda}</strong></div>
               </div>
-            </div>
-          )}
-        </SubSection>
-      )}
-
-      {showTC && (
-        <SubSection title="Tipo de cambio USD → MXN" color="var(--mod-cobros)" description="Configura la tasa para conversiones automáticas">
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, alignItems:'flex-end' }}>
-            <Field label="Tasa actual (USD → MXN)">
-              <input type="number" value={tipoCambio} onChange={e=>setTipoCambio(Number(e.target.value))} step="0.1" placeholder="17.5" />
-            </Field>
-            <div style={{ padding:'14px', background:'var(--bg-primary)', borderRadius:'var(--radius-md)', textAlign:'center' }}>
-              <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:4 }}>Conversión de ejemplo</div>
-              <div style={{ fontSize:16, fontWeight:800, color:'var(--mod-cobros)' }}>1 USD = ${tipoCambio.toFixed(2)} MXN</div>
-            </div>
-          </div>
-          <button onClick={()=>{alert('Tipo de cambio actualizado a: $'+tipoCambio+' MXN por USD'); setShowTC(false);}} style={{ marginTop:12, padding:'12px 24px', background:'var(--mod-cobros)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', cursor:'pointer', fontSize:14, fontWeight:700 }}>Actualizar tipo de cambio</button>
-        </SubSection>
-      )}
-
-      {/* REGISTRAR COBRO CON TARIFAS INTEGRADAS */}
-      {(() => {
-        const tarifas = JSON.parse(localStorage.getItem('tarifasPrecios') || '[]');
-        const gastosEscaneo = JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
-
-        const tarifa = tarifas.find(t => t.tipo.toLowerCase().includes(registroTrabajo.toLowerCase()));
-        const costoBase = tarifa ? tarifa.costoBase : 0;
-        const escaneoEnOrden = registroTrabajo && gastosEscaneo.filter(g => g.trabajo.toLowerCase().includes(registroTrabajo.toLowerCase())).reduce((sum, g) => sum + g.costoTotal, 0);
-        const costoNeto = Math.max(0, costoBase - (escaneoEnOrden || 0));
-
-        return (
-          <SubSection title="💳 Registrar cobro con tarifas" color="var(--mod-cobros)" description="Selecciona trabajo, visualiza tarifa, resta escaneo y confirma el cobro">
-            <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr auto', gap:12, alignItems:'flex-end', marginBottom:16 }}>
-              <Field label="Tipo de trabajo (selecciona o escribe)">
-                <input
-                  value={registroTrabajo}
-                  onChange={e=>setRegistroTrabajo(e.target.value)}
-                  placeholder="Ej: Corona Zirconia, Carilla, etc."
-                  list="trabajosList"
-                />
-                <datalist id="trabajosList">
-                  {tarifas.map(t => <option key={t.id} value={t.tipo} />)}
-                </datalist>
-              </Field>
-              <Field label="Método">
-                <select value={registroMetodo} onChange={e=>setRegistroMetodo(e.target.value)}>
+              <div>
+                <label style={labelStyle}>Método de pago</label>
+                <select value={modal.metodo} onChange={(e) => setModal({ ...modal, metodo: e.target.value })} style={inputBoxStyle}>
                   <option value="efectivo">💵 Efectivo</option>
                   <option value="tarjeta">💳 Tarjeta</option>
                   <option value="transferencia">🏦 Transferencia</option>
+                  <option value="cheque">📃 Cheque</option>
                 </select>
-              </Field>
-              <Field label="Moneda">
-                <select value={registroMoneda} onChange={e=>setRegistroMoneda(e.target.value)}>
-                  <option value="MXN">MXN</option>
-                  <option value="USD">USD</option>
-                </select>
-              </Field>
-              <Field label="Sobrescribir monto">
-                <input type="number" value={registroMontoOverride} onChange={e=>setRegistroMontoOverride(e.target.value)} placeholder="(opcional)" />
-              </Field>
-              <button onClick={()=>{
-                if(!registroTrabajo) { alert('Selecciona un trabajo'); return; }
-                const monto = registroMontoOverride ? Number(registroMontoOverride) : costoNeto;
-                alert(`✅ Cobro registrado:\n\n💼 Trabajo: ${registroTrabajo}\n💰 Monto: $${monto.toLocaleString()} ${registroMoneda}\n💳 Método: ${registroMetodo}\n\n${escaneoEnOrden ? `📱 Escaneo descontado: -$${escaneoEnOrden}\n` : ''}Ingreso neto: $${monto.toLocaleString()}`);
-                setRegistroTrabajo('');
-                setRegistroMontoOverride('');
-                setRegistroMetodo('efectivo');
-                setRegistroMoneda('MXN');
-              }} style={{ padding:'12px 24px', background:'var(--mod-cobros)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', cursor:'pointer', fontSize:14, fontWeight:700 }}>✅ Registrar</button>
+              </div>
+              <div>
+                <label style={labelStyle}>Notas (opcional)</label>
+                <textarea value={modal.notas} onChange={(e) => setModal({ ...modal, notas: e.target.value })} rows={2} style={{ ...inputBoxStyle, resize: 'vertical', fontFamily: 'inherit' }} placeholder="Ej: Pago parcial, ref #123" />
+              </div>
             </div>
 
-            {registroTrabajo && tarifa && (
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12, marginBottom:16 }}>
-                <div style={{ padding:14, background:'var(--bg-primary)', borderRadius:'var(--radius-md)', borderLeft:'3px solid var(--mod-cobros)' }}>
-                  <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:4 }}>💰 Tarifa base</div>
-                  <div style={{ fontSize:20, fontWeight:800, color:'var(--mod-cobros)' }}>${costoBase.toLocaleString()}</div>
-                </div>
-                {escaneoEnOrden > 0 && (
-                  <div style={{ padding:14, background:'rgba(239,68,68,0.08)', borderRadius:'var(--radius-md)', borderLeft:'3px solid var(--danger)' }}>
-                    <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:4 }}>📱 Escaneo descontado</div>
-                    <div style={{ fontSize:20, fontWeight:800, color:'var(--danger)' }}>-${escaneoEnOrden}</div>
-                  </div>
-                )}
-                <div style={{ padding:14, background:'rgba(34,197,94,0.08)', borderRadius:'var(--radius-md)', borderLeft:'3px solid var(--success)' }}>
-                  <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:4 }}>📊 Ingreso neto</div>
-                  <div style={{ fontSize:20, fontWeight:800, color:'var(--success)' }}>${registroMontoOverride ? Number(registroMontoOverride) : costoNeto}</div>
-                </div>
-              </div>
-            )}
-
-            {registroTrabajo && !tarifa && (
-              <div style={{ padding:14, background:'rgba(251,146,60,0.1)', border:'1px solid rgba(251,146,60,0.3)', borderRadius:'var(--radius-md)', color:'var(--warning)', fontSize:13, marginBottom:16 }}>
-                ⚠️ Trabajo no encontrado en tarifas. Ingresa un monto manualmente o crea la tarifa primero.
-              </div>
-            )}
-          </SubSection>
-        );
-      })()}
-
-      {/* FILTROS PARA DIVIDIR DEUDAS POR DOCTOR Y FECHA */}
-      <SubSection title="Filtrar deudas" color="var(--mod-cobros)" description="Divide por doctor y fecha para encontrar lo que necesitas">
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr auto', gap:12, alignItems:'flex-end' }}>
-          <Field label="Doctor">
-            <select value={filterDoctor} onChange={e=>setFilterDoctor(e.target.value)} style={{ width:'100%' }}>
-              <option value="todos">📋 Todos los doctores</option>
-              {[...new Set(COBROS_DATA.filter(c=>c.doctor).map(c=>c.doctor))].sort().map(doc => (
-                <option key={doc} value={doc}>{doc}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Desde (fecha)">
-            <input type="date" value={filterDateFrom} onChange={e=>setFilterDateFrom(e.target.value)} style={{ width:'100%' }} />
-          </Field>
-          <Field label="Hasta (fecha)">
-            <input type="date" value={filterDateTo} onChange={e=>setFilterDateTo(e.target.value)} style={{ width:'100%' }} />
-          </Field>
-          <button onClick={()=>{setFilterDoctor('todos');setFilterDateFrom('');setFilterDateTo('');}} style={{ padding:'12px 20px', background:'var(--bg-card)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:'var(--text-secondary)', cursor:'pointer', fontSize:13, fontWeight:700 }}>🔄 Limpiar</button>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={() => setModal(null)} style={{ padding: '10px 18px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13 }}>Cancelar</button>
+              <button onClick={confirmarCobro} style={{ padding: '10px 20px', background: 'var(--success)', color: '#000', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>✅ Confirmar cobro</button>
+            </div>
+          </div>
         </div>
-      </SubSection>
+      )}
 
-      {/* STATS SEPARADOS POR MONEDA */}
-      {(() => {
-        const allCobros = [...COBROS_DATA, ...archivedFromProduccion];
-        const cobradomxn = allCobros.filter(c=>c.metodo!=='pendiente'&&c.orden&&c.moneda==='MXN').reduce((s,c)=>s+c.monto,0);
-        const cobradousd = allCobros.filter(c=>c.metodo!=='pendiente'&&c.orden&&c.moneda==='USD').reduce((s,c)=>s+c.monto,0);
-        const pendientemxn = allCobros.filter(c=>c.metodo==='pendiente'&&c.moneda==='MXN').reduce((s,c)=>s+c.monto,0);
-        const pendienteusd = allCobros.filter(c=>c.metodo==='pendiente'&&c.moneda==='USD').reduce((s,c)=>s+c.monto,0);
-
-        return (
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(280px, 1fr))', gap:12, marginBottom:20 }}>
-            <div style={{ background:'linear-gradient(135deg, #10B98108, transparent)', border:'1px solid #10B98130', borderRadius:'var(--radius-lg)', padding:'18px 22px' }}>
-              <div style={{ fontSize:13, color:'var(--text-muted)', marginBottom:6, fontWeight:600 }}>💰 Cobrado en MXN</div>
-              <div style={{ fontSize:28, fontWeight:900, color:'var(--success)' }}>{'$'+cobradomxn.toLocaleString()}</div>
-              <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:8 }}>Pagos completados</div>
+      {/* MODAL — Cobro manual */}
+      {modalManual && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', padding: 24, maxWidth: 520, width: '100%', border: '2px solid var(--mod-cobros)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>➕ Cobro manual</h2>
+              <button onClick={() => setModalManual(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', fontSize: 20, cursor: 'pointer' }}>✕</button>
             </div>
-
-            <div style={{ background:'linear-gradient(135deg, #F8751308, transparent)', border:'1px solid #F8751330', borderRadius:'var(--radius-lg)', padding:'18px 22px' }}>
-              <div style={{ fontSize:13, color:'var(--text-muted)', marginBottom:6, fontWeight:600 }}>💵 Cobrado en USD</div>
-              <div style={{ fontSize:28, fontWeight:900, color:'var(--info)' }}>{'$'+cobradousd.toLocaleString()}</div>
-              <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:8 }}>Pagos completados</div>
+            <div style={{ background: 'rgba(91,141,239,0.08)', padding: 10, borderRadius: 8, fontSize: 12, color: 'var(--text-secondary)', marginBottom: 14 }}>
+              ℹ️ Usa esto para cobros que no vienen de un trabajo en Producción (ej: ajustes, anticipos).
             </div>
-
-            <div style={{ background:'linear-gradient(135deg, #FBBF2408, transparent)', border:'1px solid #FBBF2430', borderRadius:'var(--radius-lg)', padding:'18px 22px' }}>
-              <div style={{ fontSize:13, color:'var(--text-muted)', marginBottom:6, fontWeight:600 }}>⏳ Pendiente MXN</div>
-              <div style={{ fontSize:28, fontWeight:900, color:'var(--warning)' }}>{'$'+pendientemxn.toLocaleString()}</div>
-              <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:8 }}>Esperando pago</div>
+            <div style={{ display: 'grid', gap: 10 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 10 }}>
+                <div><label style={labelStyle}>Folio</label><input value={nuevoManual.folio} onChange={(e) => setNuevoManual({ ...nuevoManual, folio: e.target.value })} placeholder="Auto" style={inputBoxStyle} /></div>
+                <div><label style={labelStyle}>Doctor *</label><input value={nuevoManual.doctor} onChange={(e) => setNuevoManual({ ...nuevoManual, doctor: e.target.value })} style={inputBoxStyle} /></div>
+              </div>
+              <div><label style={labelStyle}>Paciente *</label><input value={nuevoManual.paciente} onChange={(e) => setNuevoManual({ ...nuevoManual, paciente: e.target.value })} style={inputBoxStyle} /></div>
+              <div><label style={labelStyle}>Concepto / trabajo</label><input value={nuevoManual.trabajo} onChange={(e) => setNuevoManual({ ...nuevoManual, trabajo: e.target.value })} placeholder="Ej: Ajuste, anticipo" style={inputBoxStyle} /></div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div><label style={labelStyle}>Monto *</label><input type="number" value={nuevoManual.monto} onChange={(e) => setNuevoManual({ ...nuevoManual, monto: e.target.value })} style={inputBoxStyle} /></div>
+                <div><label style={labelStyle}>Moneda</label><select value={nuevoManual.moneda} onChange={(e) => setNuevoManual({ ...nuevoManual, moneda: e.target.value })} style={inputBoxStyle}><option value="MXN">MXN</option><option value="USD">USD</option></select></div>
+              </div>
+              <div><label style={labelStyle}>Notas</label><textarea value={nuevoManual.notas} onChange={(e) => setNuevoManual({ ...nuevoManual, notas: e.target.value })} rows={2} style={{ ...inputBoxStyle, resize: 'vertical', fontFamily: 'inherit' }} /></div>
             </div>
-
-            <div style={{ background:'linear-gradient(135deg, #FBBF2408, transparent)', border:'1px solid #FBBF2430', borderRadius:'var(--radius-lg)', padding:'18px 22px' }}>
-              <div style={{ fontSize:13, color:'var(--text-muted)', marginBottom:6, fontWeight:600 }}>⏳ Pendiente USD</div>
-              <div style={{ fontSize:28, fontWeight:900, color:'var(--warning)' }}>{'$'+pendienteusd.toLocaleString()}</div>
-              <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:8 }}>Esperando pago</div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+              <button onClick={() => setModalManual(false)} style={{ padding: '10px 18px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13 }}>Cancelar</button>
+              <button onClick={guardarManual} style={{ padding: '10px 20px', background: 'var(--mod-cobros)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>💾 Crear cobro</button>
             </div>
           </div>
-        );
-      })()}
-
-      {/* LISTA FILTRADA DE DEUDAS */}
-      {(() => {
-        const allCobros = [...COBROS_DATA, ...archivedFromProduccion];
-        const uniqueDoctors = [...new Set(allCobros.filter(c=>c.doctor).map(c=>c.doctor))].sort();
-
-        // Actualizar opciones de doctor en el select
-        const filtered = allCobros.filter(c => {
-          const doctorMatch = filterDoctor === 'todos' || c.doctor === filterDoctor;
-          const dateMatch = !filterDateFrom && !filterDateTo ? true : true;
-          return doctorMatch && dateMatch;
-        });
-
-        return (
-          <div>
-            <div style={{ fontSize:13, color:'var(--text-muted)', marginBottom:12, fontWeight:600, paddingLeft:20 }}>
-              📊 Mostrando {filtered.length} de {allCobros.length} registros
-              {archivedFromProduccion.length > 0 && <span style={{ color:'var(--success)', marginLeft:8 }}>({archivedFromProduccion.length} desde Producción)</span>}
-            </div>
-            {filtered.length === 0 ? (
-              <div style={{ background:'var(--bg-card)', borderRadius:'var(--radius-lg)', padding:40, textAlign:'center', border:'1px solid var(--border-subtle)' }}>
-                <div style={{ fontSize:40, marginBottom:12 }}>🔍</div>
-                <div style={{ fontSize:15, fontWeight:700, color:'var(--text-secondary)' }}>No hay deudas que coincidan</div>
-                <div style={{ fontSize:13, color:'var(--text-muted)', marginTop:4 }}>Intenta cambiar los filtros de doctor o fecha</div>
-              </div>
-            ) : (
-              <div style={{ background:'var(--bg-card)', borderRadius:'var(--radius-lg)', overflow:'hidden', border:'1px solid var(--border-subtle)' }}>
-                {filtered.map((c,i) => (
-                  <div key={c.orden||'archived-'+i} style={{ display:'flex', alignItems:'center', padding:'16px 20px', borderBottom:i < filtered.length-1 ? '1px solid var(--border-subtle)' : 'none', gap:16, background:(!c.orden || c.estado==='completado')?'rgba(34,197,94,0.03)':'transparent' }}>
-                    <div style={{ width:4, height:36, borderRadius:2, background:c.estado==='completado'?'var(--success)':c.metodo==='efectivo'?'var(--success)':c.metodo==='tarjeta'?'var(--info)':'var(--danger)', flexShrink:0 }} />
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontSize:14, fontWeight:700, color:c.orden?'var(--mod-ordenes)':'var(--success)', display:'flex', alignItems:'center', gap:8 }}>
-                        {c.orden||'📦 DESDE PRODUCCIÓN'}
-                        {c.estado==='completado' && <span style={{ fontSize:12, fontWeight:600, color:'var(--success)', background:'rgba(34,197,94,0.15)', padding:'2px 8px', borderRadius:'4px' }}>✅ Completado</span>}
-                      </div>
-                      <div style={{ fontSize:13, color:'var(--text-muted)' }}>{c.doctor||'Desconocido'} — {c.paciente||'Sin paciente'}</div>
-                      {c.fechaArchivado && <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:2 }}>📦 Archivado: {c.fechaArchivado}</div>}
-                    </div>
-                    <div style={{ fontSize:13, color:'var(--text-secondary)' }}>{c.trabajo||'—'}</div>
-                    <div style={{ fontSize:16, fontWeight:800 }}>${c.monto.toLocaleString()} {c.moneda}</div>
-                    <Badge color={c.estado==='completado'?'var(--success)':c.metodo==='efectivo'?'var(--success)':c.metodo==='tarjeta'?'var(--info)':'var(--danger)'}>{c.estado==='completado'?'✅ Completado':c.metodo==='efectivo'?'💵 Efectivo':c.metodo==='tarjeta'?'💳 Tarjeta':'⏳ Pendiente'}</Badge>
-                    <span style={{ fontSize:16 }}>{c.nota_firmada?'📄✅':'📄❌'}</span>
-                    <span style={{ fontSize:16 }}>{c.confirmado?'✅':'⚠️'}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })()}
+        </div>
+      )}
     </div>
   );
 }
@@ -3684,75 +4444,146 @@ const LAB_EXT_DATA = [
 ];
 
 function LabExternoModule() {
-  const [view, setView] = useState('list');
-  const TIPOS_EXTERNOS = ['Fresado', 'Sinterizado', 'Corona externa (emergencia)'];
-  const [trabajos, setTrabajos] = useState([
-    { id: 1, orden: 'ZL-0001', tipo: 'Fresado', estatus: 'en-proceso', asignado: 'Kevin', fecha: '2026-05-28' },
-    { id: 2, orden: 'ZL-0005', tipo: 'Sinterizado', estatus: 'en-proceso', asignado: 'Aram', fecha: '2026-05-27' },
-    { id: 3, orden: 'ZL-0007', tipo: 'Corona externa (emergencia)', estatus: 'pendiente', asignado: 'Montserrat', fecha: '2026-05-26' },
-  ]);
-  const [nuevoTipo, setNuevoTipo] = useState('Fresado');
+  useZeraSync('labExternoSinterizado');
+  const [items, setItems] = React.useState(() => JSON.parse(localStorage.getItem('labExternoSinterizado') || '[]'));
+  const [tc, setTc] = React.useState(parseFloat(localStorage.getItem('tipoCambioUSDMXN')) || 17.5);
 
-  useEffect(() => {
-    const labExternoList = JSON.parse(localStorage.getItem('labExternoSinterizado') || '[]');
-    if (labExternoList.length > 0) {
-      const newTrabajos = labExternoList.map((item, idx) => ({
-        id: Math.max(...trabajos.map(t=>t.id), 0) + idx + 1,
-        orden: item.orden,
-        tipo: 'Sinterizado',
-        estatus: 'pendiente',
-        asignado: 'Asignar',
-        fecha: item.fechaEntrega || new Date(Date.now()+2*86400000).toISOString().split('T')[0]
-      }));
-      setTrabajos([...trabajos, ...newTrabajos]);
-      localStorage.removeItem('labExternoSinterizado');
-    }
+  React.useEffect(() => {
+    const handler = () => setItems(JSON.parse(localStorage.getItem('labExternoSinterizado') || '[]'));
+    window.addEventListener('zera-sync', handler);
+    return () => window.removeEventListener('zera-sync', handler);
   }, []);
 
-  const markComplete = (id) => {
-    setTrabajos(trabajos.map(t => t.id === id ? { ...t, estatus: 'terminado' } : t));
-    alert('✅ Trabajo marcado como terminado');
+  const guardarItems = (nuevos) => {
+    setItems(nuevos);
+    localStorage.setItem('labExternoSinterizado', JSON.stringify(nuevos));
+  };
+  const actualizarTC = (v) => {
+    const n = parseFloat(v) || 0;
+    setTc(n);
+    localStorage.setItem('tipoCambioUSDMXN', String(n));
   };
 
-  const addNuevo = () => {
-    const newId = Math.max(...trabajos.map(t=>t.id), 0) + 1;
-    setTrabajos([...trabajos, { id: newId, orden: `ZL-${String(newId).padStart(4,'0')}`, tipo: nuevoTipo, estatus: 'pendiente', asignado: 'Asignar', fecha: new Date(Date.now()+2*86400000).toISOString().split('T')[0] }]);
-    alert('✅ Trabajo agregado');
+  const marcarTerminado = (id) => {
+    if (!confirm('¿Confirmar que el sinterizado terminó? Se registrará el gasto y la orden pasará a la siguiente fase (Porcelana).')) return;
+    const ahora = new Date();
+    const fecha = ahora.toLocaleString('es-MX');
+    const item = items.find(i => i.id === id);
+    if (!item) return;
+
+    // 1. Actualizar item en lab externo
+    const nuevosItems = items.map(i => i.id === id ? { ...i, estado: 'terminado', fechaTerminado: fecha, fechaTerminadoISO: ahora.toISOString() } : i);
+    guardarItems(nuevosItems);
+
+    // 2. Registrar el gasto en costosOrdenes
+    const costos = JSON.parse(localStorage.getItem('costosOrdenes') || '[]');
+    const costoMXN = item.moneda === 'USD' ? item.costo * tc : item.costo;
+    costos.push({
+      id: Date.now(),
+      orderId: item.ordenId,
+      trabajo: `Sinterizado externo — ${item.folio}`,
+      unidades: 1,
+      costoUnitario: costoMXN,
+      costoTotal: costoMXN,
+      moneda: 'MXN',
+      montoOriginal: item.costo,
+      monedaOriginal: item.moneda,
+      fecha: fecha,
+      fechaISO: ahora.toISOString(),
+      estado: 'pendiente'
+    });
+    localStorage.setItem('costosOrdenes', JSON.stringify(costos));
+
+    // 3. Mover la orden a la siguiente fase (porcelana)
+    const ordenes = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
+    const nuevasOrdenes = ordenes.map(o => {
+      if (o.id === item.ordenId) {
+        return { ...o, estado: 'porcelana', historial: [...(o.historial || []), { fase: 'porcelana', fecha: fecha, usuario: 'Lab Externo', notas: 'Sinterizado terminado, pasa a porcelana automáticamente' }] };
+      }
+      return o;
+    });
+    localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+
+    alert(`✅ Sinterizado terminado.\n💵 Gasto registrado: $${costoMXN.toFixed(2)} MXN\n→ Orden ${item.folio} pasa a Porcelana automáticamente`);
   };
+
+  const eliminar = (id) => {
+    if (!confirm('¿Eliminar de la lista? (No afecta la orden en producción)')) return;
+    guardarItems(items.filter(i => i.id !== id));
+  };
+
+  const pendientes = items.filter(i => i.estado !== 'terminado');
+  const terminados = items.filter(i => i.estado === 'terminado');
+  const totalGastoUSD = items.reduce((s, i) => s + (i.moneda === 'USD' ? i.costo : i.costo / tc), 0);
+  const totalGastoMXN = totalGastoUSD * tc;
+
+  const cardStyle = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 16, marginBottom: 12 };
+  const inputBoxStyle = { padding: '8px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 6, color: '#fff', fontSize: 13 };
 
   return (
     <div style={{ animation: 'fadeIn 0.3s' }}>
-      <SectionHeader title="Lab Externo" subtitle="Fresado, sinterizado y coronas de emergencia" color="var(--mod-lab)" icon="🔬" />
+      <SectionHeader title="Lab Externo" subtitle="Sinterizado y otros servicios externos" color="var(--mod-lab)" icon="🔬" />
 
-      {view === 'list' && (
-        <div>
-          <InfoCard icon="📌" title="Tipos de trabajo externo" description="Fresado (zirconia), Sinterizado (para casos urgentes) y Corona externa (emergencia)." color="var(--mod-lab)" />
-          <div style={{ background:'var(--bg-card)', borderRadius:'var(--radius-lg)', padding:20, marginBottom:20 }}>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 150px', gap:12, alignItems:'flex-end' }}>
-              <select value={nuevoTipo} onChange={e=>setNuevoTipo(e.target.value)}>
-                {TIPOS_EXTERNOS.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-              <Btn onClick={addNuevo}>+ Agregar trabajo</Btn>
-            </div>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
-            {trabajos.map(t => (
-              <div key={t.id} style={{ background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: 20, borderLeft: `4px solid ${t.estatus === 'terminado' ? 'var(--success)' : 'var(--warning)'}` }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <span style={{ fontSize: 16, fontWeight: 700 }}>{t.orden}</span>
-                  <Badge color={t.estatus === 'terminado' ? 'var(--success)' : 'var(--warning)'}>{t.estatus}</Badge>
-                </div>
-                <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 4 }}>{t.tipo}</div>
-                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>Asignado: {t.asignado} | Fecha: {t.fecha}</div>
-                <button onClick={() => t.estatus !== 'terminado' && markComplete(t.id)}
-                  disabled={t.estatus === 'terminado'}
-                  style={{ width: '100%', padding: 12, background: t.estatus === 'terminado' ? 'var(--bg-input)' : 'var(--mod-lab)', color: t.estatus === 'terminado' ? 'var(--text-muted)' : '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: t.estatus === 'terminado' ? 'default' : 'pointer', fontWeight: 700 }}>
-                  {t.estatus === 'terminado' ? '✅ Terminado' : 'Marcar terminado'}
-                </button>
-              </div>
-            ))}
+      {/* KPIs */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Pendientes</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--warning)' }}>{pendientes.length}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Terminados</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--success)' }}>{terminados.length}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Gasto total</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--mod-lab)' }}>${totalGastoUSD.toFixed(2)} USD</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>≈ ${totalGastoMXN.toFixed(0)} MXN</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Tipo de cambio</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>1 USD =</span>
+            <input type="number" step="0.1" value={tc} onChange={(e) => actualizarTC(e.target.value)} style={{ ...inputBoxStyle, width: 70, fontWeight: 700 }} />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>MXN</span>
           </div>
         </div>
+      </div>
+
+      {items.length === 0 ? (
+        <div style={{ ...cardStyle, textAlign: 'center', padding: 40 }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>🔬</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Sin trabajos en lab externo</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>Aparecerán aquí cuando muevas una orden a "Sinterizado" en Producción.</div>
+        </div>
+      ) : (
+        items.map(item => (
+          <div key={item.id} style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--accent-blue)' }}>{item.folio}</span>
+                  {item.estado === 'terminado'
+                    ? <span style={{ padding: '2px 8px', background: 'rgba(52,211,153,0.2)', color: 'var(--success)', borderRadius: 12, fontSize: 11, fontWeight: 700 }}>✓ Terminado</span>
+                    : <span style={{ padding: '2px 8px', background: 'rgba(251,191,36,0.2)', color: '#FBBF24', borderRadius: 12, fontSize: 11, fontWeight: 700 }}>⏳ Sinterizando</span>
+                  }
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{item.paciente}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{item.doctor} · {item.trabajo} ({item.unidades || 1}u)</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Enviado: {item.fechaEnvio}{item.fechaTerminado ? ` · Terminado: ${item.fechaTerminado}` : ''}</div>
+              </div>
+              <div style={{ textAlign: 'right', flex: '0 0 auto' }}>
+                <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--mod-lab)' }}>${item.costo} {item.moneda}</div>
+                {item.moneda === 'USD' && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>≈ ${(item.costo * tc).toFixed(0)} MXN</div>}
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  {item.estado !== 'terminado' && (
+                    <button onClick={() => marcarTerminado(item.id)} style={{ padding: '8px 14px', background: 'var(--success)', color: '#000', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>✓ Terminado</button>
+                  )}
+                  <button onClick={() => eliminar(item.id)} style={{ padding: '8px 10px', background: 'rgba(239,68,68,0.15)', color: '#EF4444', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 14 }}>🗑️</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))
       )}
     </div>
   );
@@ -3832,26 +4663,74 @@ function InventarioModule() {
 // FINANZAS — con toggles funcionales
 // ============================================================
 function FinanzasModule({ currentUser }) {
+  useZeraSync();
   const [vista, setVista] = useState('mes');
   const canEdit = !currentUser || (currentUser.id !== 'rafael' && currentUser.id !== 'montserrat');
-  const periodos = {
-    dia: { label:'Hoy 24 May', ingresos:4200, egresos:1800 },
-    semana: { label:'Semana 19-25 May', ingresos:28500, egresos:14200 },
-    mes: { label:'Mayo 2026', ingresos:87500, egresos:42300 },
-  };
-  const p = periodos[vista];
+
+  // Calcular periodo
+  const periodo = React.useMemo(() => {
+    const ahora = new Date();
+    const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+    const dow = hoy.getDay();
+    const inicioSemana = new Date(hoy);
+    inicioSemana.setDate(hoy.getDate() - (dow === 0 ? 6 : dow - 1));
+    const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
+
+    let inicio, label;
+    if (vista === 'dia') { inicio = hoy; label = 'Hoy ' + hoy.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }); }
+    else if (vista === 'semana') { inicio = inicioSemana; label = 'Semana del ' + inicioSemana.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }); }
+    else { inicio = inicioMes; label = ahora.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' }); }
+    return { inicio, fin: ahora, label };
+  }, [vista]);
+
+  // Calcular ingresos y egresos REALES desde Supabase/localStorage
+  const datosFinancieros = React.useMemo(() => {
+    const cobros = JSON.parse(localStorage.getItem('cobrosRegistro') || '[]');
+    const comisiones = JSON.parse(localStorage.getItem('comisionesGeneradas') || '[]');
+    const costos = JSON.parse(localStorage.getItem('costosOrdenes') || '[]');
+    const escaneos = JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
+    const tc = parseFloat(localStorage.getItem('tipoCambioUSDMXN')) || 17.5;
+
+    const inPeriodo = (fechaISO) => {
+      if (!fechaISO) return false;
+      try {
+        const f = new Date(fechaISO);
+        return f >= periodo.inicio && f <= periodo.fin;
+      } catch { return false; }
+    };
+
+    const toMXN = (monto, moneda) => moneda === 'USD' ? monto * tc : monto;
+
+    // INGRESOS = cobros con estado "cobrado" en el periodo
+    const ingresos = cobros.filter(c => c.estado === 'cobrado' && inPeriodo(c.fechaCobroISO || c.fechaCobro))
+                            .reduce((s, c) => s + toMXN((c.montoFinal ?? c.monto) || 0, c.moneda), 0);
+
+    // EGRESOS = comisiones del periodo + gastos de escaneo
+    const egresoComisiones = comisiones.filter(c => inPeriodo(c.fechaISO || c.fecha))
+                                       .reduce((s, c) => s + (c.montoTotalMXN || 0), 0);
+    const egresoEscaneos = escaneos.filter(e => inPeriodo(e.fechaISO || e.fecha))
+                                   .reduce((s, e) => s + (e.costoTotal || 0), 0);
+    const egresoCostos = costos.filter(c => inPeriodo(c.fechaISO || c.fecha))
+                               .reduce((s, c) => s + (c.costoTotal || 0), 0);
+    const egresos = egresoComisiones + egresoEscaneos + egresoCostos;
+
+    return {
+      ingresos, egresos,
+      desglose: [
+        { cat: 'Comisiones', monto: egresoComisiones },
+        { cat: 'Escaneos', monto: egresoEscaneos },
+        { cat: 'Costos de órdenes', monto: egresoCostos }
+      ].filter(d => d.monto > 0)
+    };
+  }, [periodo]);
+
+  const p = { label: periodo.label, ingresos: datosFinancieros.ingresos, egresos: datosFinancieros.egresos };
   const utilidad = p.ingresos - p.egresos;
-  const distFamiliar = vista==='dia'?0:vista==='semana'?3750:15000;
+  const distFamiliar = 0; // Configurable después
   const saldoLab = utilidad - distFamiliar;
 
-  const gastos = [
-    { cat:'Materiales', pct:43.7 },
-    { cat:'Lab externo (zirconia)', pct:19.9 },
-    { cat:'Nómina', pct:24.1 },
-    { cat:'Escaneos', pct:6.6 },
-    { cat:'Mensajería/Uber', pct:3.3 },
-    { cat:'Otros', pct:2.4 },
-  ];
+  const totalEgresos = Math.max(p.egresos, 1);
+  const gastos = datosFinancieros.desglose.map(g => ({ cat: g.cat, pct: (g.monto / totalEgresos * 100).toFixed(1) }));
 
   return (
     <div style={{ animation:'fadeIn 0.3s' }}>
@@ -4028,6 +4907,7 @@ function FinanzasModule({ currentUser }) {
 // TARIFAS — Lista de Precios Editable (Sincroniza con Cobros)
 // ============================================================
 function TarifasModule() {
+  useZeraSync('tarifasPrecios');
   const [tarifas, setTarifas] = useState(() => {
     const saved = localStorage.getItem('tarifasPrecios');
     return saved ? JSON.parse(saved) : [
@@ -4327,150 +5207,627 @@ const NOMINA_DATA = [
   { nombre:'Kevin', rol:'Mensajero + Lab', horas:42.5, trabajos:0, base:3000, comisiones:0, escaneos:0, total:3000, aprobado:false },
 ];
 
-function NominaModule() {
-  const [data, setData] = useState(() => {
-    const gastosEscaneo = JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
-    const comisionesFidel = JSON.parse(localStorage.getItem('comisionesFidel') || '[]');
+// ============================================================
+// MÓDULO NÓMINA - Sistema completo integrado
+// Lee: comisionesGeneradas, salariosBase, reglasComisiones,
+//      produccionOrdenes (para reporte por técnico)
+// ============================================================
 
-    const escaneosPorUnidad = gastosEscaneo.length > 0 ? gastosEscaneo.length : 0;
-    const totalEscaneos = gastosEscaneo.reduce((sum, g) => sum + g.costoTotal, 0);
+// ============================================================
+// MÓDULO NOTAS POR DOCTOR — Vista de deuda agrupada por doctor
+// Lee cobrosRegistro y agrupa por doctor: pendiente / cobrado / total
+// ============================================================
+function NotasModule({ onNavigate }) {
+  useZeraSync('cobrosRegistro');
+  const [tc, setTc] = React.useState(parseFloat(localStorage.getItem('tipoCambioUSDMXN')) || 17.5);
+  const [busqueda, setBusqueda] = React.useState('');
+  const [doctorExpandido, setDoctorExpandido] = React.useState(null);
 
-    const trabajosFidel = comisionesFidel.length;
-    const comisionTotal = comisionesFidel.reduce((sum, c) => sum + c.comisionTotal, 0);
+  const cobros = React.useMemo(() => {
+    return JSON.parse(localStorage.getItem('cobrosRegistro') || '[]');
+  }, []);
 
-    // Juan/Abril son equipo único, dividen 50-50 (opcional, aquí mostramos total)
-    return [
-      { nombre:'Rafael', rol:'Técnico Principal', horas:45.3, trabajos:12, base:4500, comisiones:3200, escaneos:0, total:7700, aprobado:false },
-      { nombre:'Montserrat', rol:'Técnico', horas:42.0, trabajos:10, base:3800, comisiones:2800, escaneos:0, total:6600, aprobado:false },
-      { nombre:'Aram', rol:'Diseñador Exocad', horas:40.0, trabajos:8, base:4000, comisiones:0, escaneos:0, total:4000, aprobado:false },
-      { nombre:'Fidel', rol:'Técnico + Comisiones', horas:46.8, trabajos:trabajosFidel, base:3500, comisiones:comisionTotal, escaneos:0, total:3500+comisionTotal, aprobado:false },
-      { nombre:'Kevin', rol:'Mensajero + Lab', horas:42.5, trabajos:0, base:3000, comisiones:0, escaneos:0, total:3000, aprobado:false },
-      { nombre:'Juan/Abril', rol:'Escaneo y Servicios', horas:totalEscaneos>0?Math.ceil(totalEscaneos/10):0, trabajos:escaneosPorUnidad, base:0, comisiones:0, escaneos:totalEscaneos, total:totalEscaneos, aprobado:false },
-    ];
-  });
-
-  // Admin de Horas — Editable employee expected hours
-  const [horasEmpleados, setHorasEmpleados] = useState(() => {
-    const saved = localStorage.getItem('horasEmpleados');
-    return saved ? JSON.parse(saved) : {
-      'Rafael': 45, 'Montserrat': 42, 'Aram': 40, 'Fidel': 47, 'Kevin': 42.5
-    };
-  });
-  const [nuevoEmpleado, setNuevoEmpleado] = useState({ nombre: '', horas: '' });
-
-  const agregarEmpleado = () => {
-    if (!nuevoEmpleado.nombre.trim() || !nuevoEmpleado.horas) {
-      alert('Completa nombre y horas');
-      return;
-    }
-    const actualizado = { ...horasEmpleados, [nuevoEmpleado.nombre]: parseFloat(nuevoEmpleado.horas) };
-    setHorasEmpleados(actualizado);
-    localStorage.setItem('horasEmpleados', JSON.stringify(actualizado));
-    setNuevoEmpleado({ nombre: '', horas: '' });
+  const actualizarTC = (v) => {
+    const n = parseFloat(v) || 0;
+    setTc(n);
+    localStorage.setItem('tipoCambioUSDMXN', String(n));
   };
 
-  const quitarEmpleado = (nombre) => {
-    const actualizado = { ...horasEmpleados };
-    delete actualizado[nombre];
-    setHorasEmpleados(actualizado);
-    localStorage.setItem('horasEmpleados', JSON.stringify(actualizado));
-  };
+  const toMXN = (monto, moneda) => moneda === 'USD' ? monto * tc : monto;
 
-  const actualizarHoras = (nombre, nuevasHoras) => {
-    const actualizado = { ...horasEmpleados, [nombre]: parseFloat(nuevasHoras) || 0 };
-    setHorasEmpleados(actualizado);
-    localStorage.setItem('horasEmpleados', JSON.stringify(actualizado));
-  };
+  // Agrupar por doctor
+  const doctores = React.useMemo(() => {
+    const map = {};
+    cobros.forEach(c => {
+      const d = c.doctor || 'Sin doctor';
+      if (!map[d]) {
+        map[d] = { nombre: d, pendientes: [], cobrados: [], totalPendiente: 0, totalCobrado: 0, totalGeneral: 0, ultimoMovimiento: null };
+      }
+      const m = (c.montoFinal ?? c.monto) || 0;
+      const monto = toMXN(m, c.moneda);
+      if (c.estado === 'cobrado') {
+        map[d].cobrados.push(c);
+        map[d].totalCobrado += monto;
+      } else {
+        map[d].pendientes.push(c);
+        map[d].totalPendiente += monto;
+      }
+      map[d].totalGeneral += monto;
+      const fecha = new Date(c.fechaEmisionISO || c.fechaEmision || 0);
+      if (!map[d].ultimoMovimiento || fecha > map[d].ultimoMovimiento) {
+        map[d].ultimoMovimiento = fecha;
+      }
+    });
+    return Object.values(map)
+      .filter(d => !busqueda || d.nombre.toLowerCase().includes(busqueda.toLowerCase()))
+      .sort((a, b) => b.totalPendiente - a.totalPendiente);
+  }, [cobros, tc, busqueda]);
 
-  const totalNomina = data.reduce((s,d) => s+d.total, 0);
-  const aprobar = (nombre) => setData(data.map(d => d.nombre===nombre ? {...d, aprobado:true} : d));
+  const totalAdeudado = doctores.reduce((s, d) => s + d.totalPendiente, 0);
+  const totalCobradoGral = doctores.reduce((s, d) => s + d.totalCobrado, 0);
+
+  const cardStyle = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 16, marginBottom: 12 };
+  const inputBoxStyle = { padding: '8px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 6, color: '#fff', fontSize: 13 };
 
   return (
-    <div style={{ animation:'fadeIn 0.3s' }}>
-      <SectionHeader title="Nómina y Comisiones" subtitle={`Semana 19-25 Mayo — Total: $${totalNomina.toLocaleString()}`} color="var(--mod-nomina)" icon="💵" />
+    <div style={{ animation: 'fadeIn 0.3s' }}>
+      <SectionHeader title="Notas por Doctor" subtitle="Cuánto te debe cada doctor (consolidado)" color="var(--mod-cobros)" icon="📒" />
 
-      <InfoCard icon="📌" title="Reglas de comisiones" description="Solo Rafael y Montserrat reciben comisiones por trabajo. Aram, Fidel y Kevin reciben salario base fijo. Las comisiones se calculan con base en los tiempos registrados en la sección de Tiempos." color="var(--mod-nomina)" />
-
-      {/* Admin de Horas — pequeña sección para gestionar horas */}
-      <SubSection title="⏰ Admin de Horas" color="var(--mod-nomina)" description="Edita las horas esperadas de cada empleado">
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))', gap:10, marginBottom:16 }}>
-          {Object.entries(horasEmpleados).map(([nombre, horas]) => (
-            <div key={nombre} style={{ background:'var(--bg-primary)', padding:12, borderRadius:'var(--radius-md)', border:'1px solid var(--border-subtle)' }}>
-              <div style={{ fontSize:12, fontWeight:700, color:'var(--text-muted)', marginBottom:6 }}>{nombre}</div>
-              <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                <input
-                  type="number"
-                  value={horas}
-                  onChange={(e) => actualizarHoras(nombre, e.target.value)}
-                  style={{ flex:1, padding:'6px', background:'var(--bg-input)', border:'1px solid var(--border-subtle)', borderRadius:'4px', color:'#fff', fontSize:13, fontWeight:700 }}
-                />
-                <button
-                  onClick={() => quitarEmpleado(nombre)}
-                  style={{ padding:'6px 8px', background:'rgba(239,68,68,0.2)', border:'none', color:'var(--danger)', borderRadius:'4px', cursor:'pointer', fontSize:12, fontWeight:600 }}
-                >
-                  🗑️
-                </button>
-              </div>
-            </div>
-          ))}
+      {/* KPIs */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Total adeudado</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--warning)' }}>${totalAdeudado.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>MXN</div>
         </div>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 120px', gap:8 }}>
-          <input
-            type="text"
-            value={nuevoEmpleado.nombre}
-            onChange={(e) => setNuevoEmpleado({ ...nuevoEmpleado, nombre: e.target.value })}
-            placeholder="Nombre"
-            style={{ padding:'10px', background:'var(--bg-input)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:'#fff', fontSize:13 }}
-          />
-          <input
-            type="number"
-            value={nuevoEmpleado.horas}
-            onChange={(e) => setNuevoEmpleado({ ...nuevoEmpleado, horas: e.target.value })}
-            placeholder="Horas/día"
-            style={{ padding:'10px', background:'var(--bg-input)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', color:'#fff', fontSize:13 }}
-          />
-          <button
-            onClick={agregarEmpleado}
-            style={{ padding:'10px', background:'var(--mod-nomina)', border:'none', color:'#fff', borderRadius:'var(--radius-md)', cursor:'pointer', fontSize:13, fontWeight:700 }}
-          >
-            + Agregar
-          </button>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Cobrado total</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--success)' }}>${totalCobradoGral.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>MXN</div>
         </div>
-      </SubSection>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Doctores con saldo</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--accent-blue)' }}>{doctores.filter(d => d.totalPendiente > 0).length}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Tipo de cambio</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>1 USD =</span>
+            <input type="number" step="0.1" value={tc} onChange={(e) => actualizarTC(e.target.value)} style={{ ...inputBoxStyle, width: 70, fontWeight: 700 }} />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>MXN</span>
+          </div>
+        </div>
+      </div>
 
-      {data.map(d => {
-        const tieneComision = d.comisiones > 0;
-        const tieneEscaneo = d.escaneos > 0;
-        const isJuanAbril = d.nombre === 'Juan/Abril';
-        return (
-          <div key={d.nombre} style={{ background:'var(--bg-card)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-lg)', padding:20, marginBottom:12, borderLeft:isJuanAbril?'4px solid var(--info)':'4px solid transparent' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-              <div style={{ display:'flex', alignItems:'center', gap:14 }}>
-                <div style={{ width:48, height:48, borderRadius:'50%', background:isJuanAbril?'linear-gradient(135deg, var(--info), #0284C7)':'linear-gradient(135deg, var(--mod-nomina), #4338CA)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, fontWeight:800, color:'#fff' }}>{d.nombre[0]}</div>
-                <div>
-                  <div style={{ fontSize:16, fontWeight:700 }}>{d.nombre}</div>
-                  <div style={{ fontSize:13, color:'var(--text-muted)' }}>{d.rol} | {d.trabajos} unidades | ${d.escaneos.toLocaleString()}</div>
+      {/* Búsqueda */}
+      <div style={{ marginBottom: 16 }}>
+        <input type="text" placeholder="🔍 Buscar doctor..." value={busqueda} onChange={(e) => setBusqueda(e.target.value)} style={{ ...inputBoxStyle, width: '100%' }} />
+      </div>
+
+      {/* Lista de doctores */}
+      {doctores.length === 0 ? (
+        <div style={{ ...cardStyle, textAlign: 'center', padding: 40 }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>📒</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Sin notas aún</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>Las notas aparecen cuando una orden se marca como ENTREGADA en Producción.</div>
+        </div>
+      ) : (
+        doctores.map(d => {
+          const expandido = doctorExpandido === d.nombre;
+          return (
+            <div key={d.nombre} style={cardStyle}>
+              <div onClick={() => setDoctorExpandido(expandido ? null : d.nombre)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
+                  <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, var(--mod-cobros), #B91C1C)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 800, color: '#fff' }}>{d.nombre[0]}</div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>{d.nombre}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{d.pendientes.length + d.cobrados.length} notas · {d.pendientes.length} pendiente{d.pendientes.length !== 1 ? 's' : ''}</div>
+                  </div>
                 </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(80px, 1fr))', gap: 12, textAlign: 'center', flex: '0 1 360px' }}>
+                  <div>
+                    <div style={{ fontSize: 10, color: 'var(--warning)' }}>Debe</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: d.totalPendiente > 0 ? 'var(--warning)' : 'var(--text-muted)' }}>${d.totalPendiente.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: 'var(--success)' }}>Cobrado</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--success)' }}>${d.totalCobrado.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: 'var(--mod-cobros)' }}>Total</div>
+                    <div style={{ fontSize: 18, fontWeight: 900, color: 'var(--mod-cobros)' }}>${d.totalGeneral.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div>
+                  </div>
+                </div>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>{expandido ? '▾' : '▸'}</div>
               </div>
-              <div style={{ display:'flex', alignItems:'center', gap:16 }}>
-                {isJuanAbril ? (
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, textAlign:'center' }}>
-                    <div><div style={{ fontSize:11, color:'var(--text-muted)' }}>Escaneos</div><div style={{ fontSize:16, fontWeight:700 }}>{d.trabajos}u</div></div>
-                    <div><div style={{ fontSize:11, color:'var(--info)' }}>Total ganado</div><div style={{ fontSize:20, fontWeight:900, color:'var(--info)' }}>${d.total.toLocaleString()}</div></div>
+
+              {expandido && (
+                <div style={{ borderTop: '1px solid var(--border-subtle)', marginTop: 14, paddingTop: 14 }}>
+                  {d.pendientes.length > 0 && (
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--warning)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>⏳ Pendientes ({d.pendientes.length})</div>
+                      <div style={{ display: 'grid', gap: 6 }}>
+                        {d.pendientes.map(c => (
+                          <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(245,158,11,0.08)', borderRadius: 8, fontSize: 12, borderLeft: '3px solid var(--warning)' }}>
+                            <div>
+                              <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{c.folio} · {c.paciente}</div>
+                              <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>{c.trabajo} · {c.fechaEmision}</div>
+                            </div>
+                            <div style={{ color: 'var(--warning)', fontWeight: 700 }}>${((c.montoFinal ?? c.monto) || 0).toLocaleString('es-MX')} {c.moneda}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {d.cobrados.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--success)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>✅ Cobrados ({d.cobrados.length})</div>
+                      <div style={{ display: 'grid', gap: 6 }}>
+                        {d.cobrados.slice(0, 10).map(c => (
+                          <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(52,211,153,0.08)', borderRadius: 8, fontSize: 12, borderLeft: '3px solid var(--success)' }}>
+                            <div>
+                              <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{c.folio} · {c.paciente}</div>
+                              <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>{c.trabajo} · {c.fechaCobro} ({c.metodo})</div>
+                            </div>
+                            <div style={{ color: 'var(--success)', fontWeight: 700 }}>${((c.montoFinal ?? c.monto) || 0).toLocaleString('es-MX')} {c.moneda}</div>
+                          </div>
+                        ))}
+                        {d.cobrados.length > 10 && <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', padding: 6 }}>... y {d.cobrados.length - 10} más</div>}
+                      </div>
+                    </div>
+                  )}
+                  {onNavigate && (
+                    <button onClick={(e) => { e.stopPropagation(); onNavigate('cobros'); }} style={{ marginTop: 12, padding: '8px 14px', background: 'var(--mod-cobros)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
+                      💳 Ir a Cobros para registrar pago
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+const NOMINA_EMPLEADOS_DEFAULT = ['Rafael', 'Montserrat', 'Aram', 'Fidel', 'Kevin', 'Juan/Abril'];
+
+function NominaModule() {
+  useZeraSync(); // sigue cambios de salarios, reglas, comisiones, producción
+  // ---- Estado de salarios base (editable + persistente) ----
+  const [salarios, setSalarios] = React.useState(() => {
+    const saved = localStorage.getItem('salariosBase');
+    return saved ? JSON.parse(saved) : {
+      'Rafael': 0,
+      'Montserrat': 0,
+      'Aram': 0,
+      'Fidel': 0,
+      'Kevin': 0,
+      'Juan/Abril': 0
+    };
+  });
+  const guardarSalarios = (nuevo) => {
+    setSalarios(nuevo);
+    localStorage.setItem('salariosBase', JSON.stringify(nuevo));
+  };
+
+  // ---- Reglas de comisiones (editable + persistente) ----
+  const [reglas, setReglas] = React.useState(() => {
+    const saved = localStorage.getItem('reglasComisiones');
+    return saved ? JSON.parse(saved) : [
+      { id: 1, empleado: 'Fidel', tipoTrabajoIncluye: 'porcelana', monto: 5, moneda: 'USD', activa: true }
+    ];
+  });
+  const guardarReglas = (nuevo) => {
+    setReglas(nuevo);
+    localStorage.setItem('reglasComisiones', JSON.stringify(nuevo));
+  };
+
+  // ---- Tipo de cambio (compartido con Cobros) ----
+  const [tipoCambio, setTipoCambio] = React.useState(() => {
+    const saved = parseFloat(localStorage.getItem('tipoCambioUSDMXN'));
+    return isNaN(saved) || saved <= 0 ? 17.5 : saved;
+  });
+
+  // ---- Selección de semana (por defecto: semana actual) ----
+  const [semanaSeleccionada, setSemanaSeleccionada] = React.useState(() => {
+    const hoy = new Date();
+    const diaSemana = hoy.getDay(); // 0=domingo, 1=lunes...
+    const diff = diaSemana === 0 ? -6 : 1 - diaSemana; // lunes de la semana actual
+    const lunes = new Date(hoy);
+    lunes.setDate(hoy.getDate() + diff);
+    lunes.setHours(0, 0, 0, 0);
+    return lunes.toISOString().split('T')[0];
+  });
+
+  const rangoSemana = React.useMemo(() => {
+    const inicio = new Date(semanaSeleccionada);
+    inicio.setHours(0, 0, 0, 0);
+    const fin = new Date(inicio);
+    fin.setDate(inicio.getDate() + 6);
+    fin.setHours(23, 59, 59, 999);
+    return { inicio, fin };
+  }, [semanaSeleccionada]);
+
+  const moverSemana = (deltaDias) => {
+    const d = new Date(semanaSeleccionada);
+    d.setDate(d.getDate() + deltaDias);
+    setSemanaSeleccionada(d.toISOString().split('T')[0]);
+  };
+
+  // ---- Cargar comisiones del periodo ----
+  const comisionesGeneradas = React.useMemo(() => {
+    const all = JSON.parse(localStorage.getItem('comisionesGeneradas') || '[]');
+    return all.filter(c => {
+      const f = new Date(c.fechaISO || c.fecha);
+      return f >= rangoSemana.inicio && f <= rangoSemana.fin;
+    });
+  }, [rangoSemana, reglas]); // reglas trigger update
+
+  // ---- Trabajos completados en la semana (para reporte por técnico) ----
+  const trabajosCompletadosSemana = React.useMemo(() => {
+    const ordenes = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
+    return ordenes.filter(o => {
+      if (o.estado !== 'calidad' && o.estado !== 'enviado' && o.estado !== 'finalizado') return false;
+      // Buscar fecha de cuando llegó a calidad en historial
+      const fase = (o.historial || []).find(h => h.fase === 'calidad' || h.fase === 'enviado' || h.fase === 'finalizado');
+      if (!fase) return false;
+      // historial.fecha puede ser un string es-MX; intentar parsear
+      try {
+        const partes = fase.fecha.split(' ');
+        const fechaParte = partes[0];
+        let f;
+        if (fechaParte.includes('/')) {
+          // DD/MM/YYYY
+          const [d, m, y] = fechaParte.split('/');
+          f = new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
+        } else if (fechaParte.includes('-')) {
+          f = new Date(fechaParte);
+        } else {
+          return false;
+        }
+        return f >= rangoSemana.inicio && f <= rangoSemana.fin;
+      } catch {
+        return false;
+      }
+    });
+  }, [rangoSemana]);
+
+  // ---- Cálculos por empleado ----
+  const empleadosConDatos = React.useMemo(() => {
+    const todos = new Set([
+      ...Object.keys(salarios),
+      ...comisionesGeneradas.map(c => c.empleado),
+      ...trabajosCompletadosSemana.map(o => o.asignado_a).filter(Boolean)
+    ]);
+
+    return Array.from(todos).map(nombre => {
+      const baseSalario = parseFloat(salarios[nombre]) || 0;
+      const misComisiones = comisionesGeneradas.filter(c => c.empleado.toLowerCase() === nombre.toLowerCase());
+      const totalComisionesMXN = misComisiones.reduce((s, c) => s + (c.montoTotalMXN || 0), 0);
+      const misTrabajos = trabajosCompletadosSemana.filter(o => (o.asignado_a || '').toLowerCase() === nombre.toLowerCase());
+      return {
+        nombre,
+        salarioBase: baseSalario,
+        comisiones: misComisiones,
+        totalComisionesMXN,
+        trabajos: misTrabajos,
+        totalPagar: baseSalario + totalComisionesMXN
+      };
+    }).sort((a, b) => b.totalPagar - a.totalPagar);
+  }, [salarios, comisionesGeneradas, trabajosCompletadosSemana]);
+
+  const totalNomina = empleadosConDatos.reduce((s, e) => s + e.totalPagar, 0);
+  const totalComisiones = empleadosConDatos.reduce((s, e) => s + e.totalComisionesMXN, 0);
+  const totalBase = empleadosConDatos.reduce((s, e) => s + e.salarioBase, 0);
+
+  // ---- UI helpers ----
+  const [empleadoExpandido, setEmpleadoExpandido] = React.useState(null);
+  const [vistaActual, setVistaActual] = React.useState('reporte'); // reporte | salarios | reglas
+  const [nuevoEmpleado, setNuevoEmpleado] = React.useState('');
+  const [nuevoSalario, setNuevoSalario] = React.useState('');
+  const [nuevaRegla, setNuevaRegla] = React.useState({ empleado: '', tipoTrabajoIncluye: '', monto: 0, moneda: 'USD' });
+
+  const fmtSemana = () => {
+    return `${rangoSemana.inicio.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} – ${rangoSemana.fin.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+  };
+
+  const cardStyle = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 16, marginBottom: 12 };
+  const labelInputStyle = { display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.5px' };
+  const inputBoxStyle = { width: '100%', padding: '10px 12px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', fontSize: 13, boxSizing: 'border-box' };
+
+  // ---- handlers ----
+  const updateSalario = (nombre, monto) => {
+    guardarSalarios({ ...salarios, [nombre]: parseFloat(monto) || 0 });
+  };
+  const agregarEmpleado = () => {
+    if (!nuevoEmpleado.trim()) { alert('Escribe el nombre del empleado'); return; }
+    guardarSalarios({ ...salarios, [nuevoEmpleado.trim()]: parseFloat(nuevoSalario) || 0 });
+    setNuevoEmpleado('');
+    setNuevoSalario('');
+  };
+  const quitarEmpleado = (nombre) => {
+    if (!confirm(`¿Quitar a ${nombre} de la lista de salarios?`)) return;
+    const copia = { ...salarios };
+    delete copia[nombre];
+    guardarSalarios(copia);
+  };
+
+  const agregarRegla = () => {
+    if (!nuevaRegla.empleado.trim() || !nuevaRegla.tipoTrabajoIncluye.trim() || !nuevaRegla.monto) {
+      alert('Completa empleado, tipo de trabajo y monto');
+      return;
+    }
+    guardarReglas([...reglas, {
+      id: Date.now(),
+      empleado: nuevaRegla.empleado.trim(),
+      tipoTrabajoIncluye: nuevaRegla.tipoTrabajoIncluye.trim().toLowerCase(),
+      monto: parseFloat(nuevaRegla.monto) || 0,
+      moneda: nuevaRegla.moneda,
+      activa: true
+    }]);
+    setNuevaRegla({ empleado: '', tipoTrabajoIncluye: '', monto: 0, moneda: 'USD' });
+  };
+  const toggleRegla = (id) => {
+    guardarReglas(reglas.map(r => r.id === id ? { ...r, activa: !r.activa } : r));
+  };
+  const eliminarRegla = (id) => {
+    if (!confirm('¿Eliminar esta regla de comisión?')) return;
+    guardarReglas(reglas.filter(r => r.id !== id));
+  };
+
+  const actualizarTipoCambio = (valor) => {
+    const num = parseFloat(valor) || 0;
+    setTipoCambio(num);
+    localStorage.setItem('tipoCambioUSDMXN', String(num));
+  };
+
+  // ============================================================
+  // RENDER
+  // ============================================================
+  return (
+    <div style={{ animation: 'fadeIn 0.3s' }}>
+      <SectionHeader title="Nómina y Comisiones" subtitle={`Semana ${fmtSemana()} · Total: $${totalNomina.toLocaleString('es-MX', { maximumFractionDigits: 0 })} MXN`} color="var(--mod-nomina)" icon="💵" />
+
+      {/* TABS */}
+      <div style={{ display: 'flex', gap: 4, background: 'var(--bg-card)', borderRadius: 'var(--radius-md)', padding: 4, marginBottom: 20, flexWrap: 'wrap' }}>
+        {[
+          { id: 'reporte', label: '📊 Reporte semanal' },
+          { id: 'salarios', label: '💵 Salarios base' },
+          { id: 'reglas', label: '⚙️ Reglas de comisión' }
+        ].map(v => (
+          <button key={v.id} onClick={() => setVistaActual(v.id)} style={{
+            padding: '10px 16px', borderRadius: 'var(--radius-sm)',
+            background: vistaActual === v.id ? 'var(--mod-nomina)' : 'transparent',
+            border: 'none', color: vistaActual === v.id ? '#fff' : 'var(--text-muted)',
+            cursor: 'pointer', fontSize: 13, fontWeight: vistaActual === v.id ? 700 : 500, transition: 'all 0.15s'
+          }}>{v.label}</button>
+        ))}
+      </div>
+
+      {/* ============ TAB REPORTE SEMANAL ============ */}
+      {vistaActual === 'reporte' && (
+        <>
+          {/* Selector de semana */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 14, marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
+            <button onClick={() => moverSemana(-7)} style={{ padding: '8px 14px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>◀ Semana anterior</button>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{fmtSemana()}</div>
+            <button onClick={() => moverSemana(7)} style={{ padding: '8px 14px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Semana siguiente ▶</button>
+          </div>
+
+          {/* Resumen */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Total salarios base</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)' }}>${totalBase.toLocaleString('es-MX')}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Total comisiones</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--success)' }}>${totalComisiones.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{comisionesGeneradas.length} comisión{comisionesGeneradas.length !== 1 ? 'es' : ''} generada{comisionesGeneradas.length !== 1 ? 's' : ''}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Total nómina</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--mod-nomina)' }}>${totalNomina.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Trabajos completados</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--accent-blue)' }}>{trabajosCompletadosSemana.length}</div>
+            </div>
+          </div>
+
+          {/* Lista por empleado */}
+          {empleadosConDatos.length === 0 ? (
+            <div style={{ ...cardStyle, textAlign: 'center', padding: 40 }}>
+              <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>Sin datos para esta semana. Configura salarios base o espera a que se completen trabajos.</div>
+            </div>
+          ) : (
+            empleadosConDatos.map(e => {
+              const expandido = empleadoExpandido === e.nombre;
+              return (
+                <div key={e.nombre} style={cardStyle}>
+                  <div onClick={() => setEmpleadoExpandido(expandido ? null : e.nombre)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', gap: 12, flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
+                      <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, var(--mod-nomina), #4338CA)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 800, color: '#fff' }}>{e.nombre[0]}</div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>{e.nombre}</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{e.trabajos.length} trabajo{e.trabajos.length !== 1 ? 's' : ''} · {e.comisiones.length} comisión{e.comisiones.length !== 1 ? 'es' : ''}</div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(80px, 1fr))', gap: 12, textAlign: 'center', flex: '0 1 380px' }}>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Base</div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>${e.salarioBase.toLocaleString('es-MX')}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--success)' }}>Comisiones</div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: e.totalComisionesMXN > 0 ? 'var(--success)' : 'var(--text-muted)' }}>${e.totalComisionesMXN.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--mod-nomina)' }}>Total</div>
+                        <div style={{ fontSize: 18, fontWeight: 900, color: 'var(--mod-nomina)' }}>${e.totalPagar.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>{expandido ? '▾' : '▸'}</div>
                   </div>
-                ) : (
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12, textAlign:'center' }}>
-                    <div><div style={{ fontSize:11, color:'var(--text-muted)' }}>Base</div><div style={{ fontSize:16, fontWeight:700 }}>${d.base.toLocaleString()}</div></div>
-                    <div><div style={{ fontSize:11, color:tieneComision?'var(--success)':'var(--text-muted)' }}>Comisiones</div><div style={{ fontSize:16, fontWeight:700, color:tieneComision?'var(--success)':'var(--text-muted)' }}>{tieneComision?'$'+d.comisiones.toLocaleString():'—'}</div></div>
-                    <div><div style={{ fontSize:11, color:'var(--mod-nomina)' }}>Total</div><div style={{ fontSize:20, fontWeight:900, color:'var(--mod-nomina)' }}>${d.total.toLocaleString()}</div></div>
+
+                  {expandido && (
+                    <div style={{ borderTop: '1px solid var(--border-subtle)', marginTop: 14, paddingTop: 14 }}>
+                      {/* Trabajos hechos */}
+                      {e.trabajos.length > 0 && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>🦷 Trabajos completados</div>
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            {e.trabajos.map((t, idx) => (
+                              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--bg-input)', borderRadius: 8, fontSize: 12 }}>
+                                <span style={{ color: 'var(--text-primary)' }}>{t.folio} · {t.trabajo} ({t.dientes || '—'})</span>
+                                <span style={{ color: 'var(--text-muted)' }}>{t.paciente}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Comisiones */}
+                      {e.comisiones.length > 0 && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--success)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>💰 Comisiones generadas</div>
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            {e.comisiones.map((c, idx) => (
+                              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'rgba(52,211,153,0.08)', borderRadius: 8, fontSize: 12, borderLeft: '3px solid var(--success)' }}>
+                                <span style={{ color: 'var(--text-primary)' }}>{c.folio} · {c.descripcion}</span>
+                                <span style={{ color: 'var(--success)', fontWeight: 700 }}>${c.montoTotalMXN.toLocaleString('es-MX', { maximumFractionDigits: 0 })} MXN</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {e.trabajos.length === 0 && e.comisiones.length === 0 && (
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>Sin trabajos ni comisiones esta semana</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </>
+      )}
+
+      {/* ============ TAB SALARIOS BASE ============ */}
+      {vistaActual === 'salarios' && (
+        <>
+          <div style={{ ...cardStyle, marginBottom: 20 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 14 }}>
+              📌 Edita el salario base semanal de cada empleado. Los cambios se aplican inmediatamente al reporte de Nómina.
+            </div>
+            <div style={{ display: 'grid', gap: 10 }}>
+              {Object.entries(salarios).map(([nombre, monto]) => (
+                <div key={nombre} style={{ display: 'grid', gridTemplateColumns: '1fr 180px 40px', gap: 10, alignItems: 'center' }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{nombre}</div>
+                  <div style={{ position: 'relative' }}>
+                    <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: 13 }}>$</span>
+                    <input type="number" value={monto} onChange={(e) => updateSalario(nombre, e.target.value)} placeholder="0" style={{ ...inputBoxStyle, paddingLeft: 26 }} />
                   </div>
-                )}
-                {d.aprobado ? <Badge color="var(--success)">✅ Aprobada</Badge> : <Btn onClick={() => aprobar(d.nombre)} style={{ fontSize:13, padding:'10px 18px' }}>Aprobar</Btn>}
+                  <button onClick={() => quitarEmpleado(nombre)} style={{ padding: 8, background: 'rgba(239,68,68,0.15)', border: 'none', color: '#EF4444', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 14 }}>🗑️</button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={cardStyle}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 10 }}>➕ Agregar empleado nuevo</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px 120px', gap: 10 }}>
+              <input value={nuevoEmpleado} onChange={(e) => setNuevoEmpleado(e.target.value)} placeholder="Nombre del empleado" style={inputBoxStyle} />
+              <input type="number" value={nuevoSalario} onChange={(e) => setNuevoSalario(e.target.value)} placeholder="Salario base MXN" style={inputBoxStyle} />
+              <button onClick={agregarEmpleado} style={{ padding: '10px', background: 'var(--mod-nomina)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>+ Agregar</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ============ TAB REGLAS DE COMISIÓN ============ */}
+      {vistaActual === 'reglas' && (
+        <>
+          <div style={{ ...cardStyle, marginBottom: 16 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 12 }}>
+              📌 Define qué comisión recibe cada empleado por cada tipo de trabajo. La regla se aplica cuando un trabajo llega a la fase ✅ CALIDAD y el empleado fue quien lo trabajó.
+            </div>
+            <div style={{ background: 'rgba(91,141,239,0.08)', border: '1px solid rgba(91,141,239,0.3)', borderRadius: 8, padding: 12, fontSize: 12, color: 'var(--text-secondary)' }}>
+              <strong>Ejemplo activo:</strong> "Fidel — porcelana — $5 USD" → cada trabajo cuyo tipo contiene "porcelana" asignado a Fidel le genera $5 USD de comisión.
+            </div>
+          </div>
+
+          {/* Tipo de cambio para conversión */}
+          <div style={cardStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>💵 Tipo de cambio USD → MXN</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Para convertir comisiones en dólares a pesos en los totales de Nómina</div>
+              </div>
+              <div style={{ width: 140, position: 'relative' }}>
+                <input type="number" step="0.1" value={tipoCambio} onChange={(e) => actualizarTipoCambio(e.target.value)} style={inputBoxStyle} />
               </div>
             </div>
           </div>
-        );
-      })}
+
+          {/* Reglas existentes */}
+          <div style={cardStyle}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>Reglas configuradas ({reglas.length})</div>
+            {reglas.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>Sin reglas de comisión. Agrega una abajo.</div>
+            ) : (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {reglas.map(r => (
+                  <div key={r.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 100px 80px 60px 50px', gap: 8, alignItems: 'center', padding: 12, background: r.activa ? 'var(--bg-input)' : 'rgba(255,255,255,0.02)', borderRadius: 8, opacity: r.activa ? 1 : 0.5 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{r.empleado}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Incluye: "{r.tipoTrabajoIncluye}"</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--success)' }}>${r.monto}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{r.moneda} / trabajo</div>
+                    <button onClick={() => toggleRegla(r.id)} style={{ padding: '6px 8px', background: r.activa ? 'rgba(52,211,153,0.2)' : 'rgba(255,255,255,0.1)', border: 'none', color: r.activa ? 'var(--success)' : 'var(--text-muted)', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>{r.activa ? 'ON' : 'OFF'}</button>
+                    <button onClick={() => eliminarRegla(r.id)} style={{ padding: '6px 8px', background: 'rgba(239,68,68,0.15)', border: 'none', color: '#EF4444', borderRadius: 6, cursor: 'pointer', fontSize: 14 }}>🗑️</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Agregar nueva regla */}
+          <div style={cardStyle}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>➕ Agregar regla nueva</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 12 }}>
+              <div>
+                <label style={labelInputStyle}>Empleado</label>
+                <input list="empleados-list" value={nuevaRegla.empleado} onChange={(e) => setNuevaRegla({ ...nuevaRegla, empleado: e.target.value })} placeholder="Ej: Fidel" style={inputBoxStyle} />
+                <datalist id="empleados-list">
+                  {Object.keys(salarios).map(n => <option key={n} value={n} />)}
+                </datalist>
+              </div>
+              <div>
+                <label style={labelInputStyle}>Si el trabajo incluye la palabra...</label>
+                <input value={nuevaRegla.tipoTrabajoIncluye} onChange={(e) => setNuevaRegla({ ...nuevaRegla, tipoTrabajoIncluye: e.target.value })} placeholder='Ej: "porcelana"' style={inputBoxStyle} />
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 12 }}>
+              <div>
+                <label style={labelInputStyle}>Monto por trabajo</label>
+                <input type="number" step="0.5" value={nuevaRegla.monto} onChange={(e) => setNuevaRegla({ ...nuevaRegla, monto: e.target.value })} placeholder="5" style={inputBoxStyle} />
+              </div>
+              <div>
+                <label style={labelInputStyle}>Moneda</label>
+                <select value={nuevaRegla.moneda} onChange={(e) => setNuevaRegla({ ...nuevaRegla, moneda: e.target.value })} style={inputBoxStyle}>
+                  <option value="USD">USD</option>
+                  <option value="MXN">MXN</option>
+                </select>
+              </div>
+              <button onClick={agregarRegla} style={{ alignSelf: 'flex-end', padding: '10px 20px', background: 'var(--mod-nomina)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>+ Agregar regla</button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -4815,62 +6172,115 @@ function PortalDoctoresModule() {
 // ============================================================
 // CONFIG — funcional con foto de perfil y edición
 // ============================================================
-function ConfigModule() {
-  const [cfg, setCfg] = useState({ tecnicos:'Rafael, Montserrat, Aram, Fidel', viaticos_semanal:500, pagador:'Papá', retencion_pct:10, precio_maquila:350, tc_usd:17.5 });
-  const [profileImg, setProfileImg] = useState(null);
+function ConfigModule({ onNavigate }) {
+  // Cargar config persistente
+  const [cfg, setCfg] = useState(() => {
+    const saved = localStorage.getItem('configLab');
+    return saved ? JSON.parse(saved) : {
+      tecnicos: 'Rafael, Montserrat, Aram, Fidel, Kevin',
+      viaticos_semanal: 500,
+      pagador: 'Papá',
+      retencion_pct: 10,
+      precio_maquila: 350,
+      tc_usd: parseFloat(localStorage.getItem('tipoCambioUSDMXN')) || 17.5
+    };
+  });
+  const [profileImg, setProfileImg] = useState(() => localStorage.getItem('logoLab') || null);
   const fileRef = useRef(null);
-  const updateCfg = (k, v) => setCfg({...cfg, [k]: v});
+  const updateCfg = (k, v) => setCfg({ ...cfg, [k]: v });
 
   const handleFileChange = (e) => {
     const file = e.target.files[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = (ev) => setProfileImg(ev.target.result);
+      reader.onload = (ev) => {
+        setProfileImg(ev.target.result);
+        localStorage.setItem('logoLab', ev.target.result);
+      };
       reader.readAsDataURL(file);
     }
   };
 
+  const guardarConfig = () => {
+    localStorage.setItem('configLab', JSON.stringify(cfg));
+    // El TC también vive en su propio key para que Cobros y Nómina lo lean
+    localStorage.setItem('tipoCambioUSDMXN', String(cfg.tc_usd));
+    alert('✅ Configuración guardada. Los cambios ya están activos en toda la app.');
+  };
+
+  // Tarjetas: cada una navega a un módulo donde la funcionalidad existe
+  const moreOptions = [
+    { i: '💵', l: 'Salarios base',          goto: 'nomina',    nota: 'Editar en Nómina → Salarios base' },
+    { i: '💰', l: 'Reglas de comisiones',   goto: 'nomina',    nota: 'Editar en Nómina → Reglas de comisión' },
+    { i: '🦷', l: 'Precios de trabajos',    goto: 'tarifas',   nota: 'Editar en Tarifas' },
+    { i: '📊', l: 'Auditoría financiera',   goto: 'finanzas',  nota: 'Ver en Finanzas' },
+    { i: '🏠', l: 'Distribución familiar',  goto: 'finanzas',  nota: 'Ver en Finanzas' },
+    { i: '📦', l: 'Inventario',             goto: 'inventario', nota: 'Editar en Inventario' },
+    { i: '🏭', l: 'Labs externos',          goto: 'lab-externo', nota: 'Editar en Lab Externo' },
+    { i: '🤖', l: 'Configuración IA',       goto: 'config-ia', nota: 'API keys de Claude / OpenAI' },
+    { i: '👤', l: 'Usuarios y roles',       goto: null,        nota: 'Próximamente' },
+    { i: '📱', l: 'WhatsApp Bot',           goto: null,        nota: 'Próximamente' },
+    { i: '🔔', l: 'Alertas',                goto: null,        nota: 'Próximamente' },
+    { i: '🕐', l: 'Horario del lab',        goto: null,        nota: 'Próximamente' },
+    { i: '📹', l: 'Reglas de evidencia',    goto: null,        nota: 'Próximamente' }
+  ];
+
+  const irA = (modulo) => {
+    if (!modulo) {
+      alert('Esta sección aún no está implementada. Te avisaré cuando esté lista.');
+      return;
+    }
+    if (onNavigate) onNavigate(modulo);
+  };
+
   return (
-    <div style={{ animation:'fadeIn 0.3s' }}>
-      <SectionHeader title="Configuración" subtitle="Ajusta todo el sistema desde aquí" color="var(--mod-config)" icon="⚙️" />
+    <div style={{ animation: 'fadeIn 0.3s' }}>
+      <SectionHeader title="Configuración" subtitle="Centro de control del sistema" color="var(--mod-config)" icon="⚙️" />
 
-      <SubSection title="Perfil del laboratorio" color="var(--mod-config)" description="Logo, foto y datos del lab">
-        <div style={{ display:'flex', gap:20, alignItems:'center' }}>
-          <div onClick={()=>fileRef.current?.click()} style={{ width:100, height:100, borderRadius:'var(--radius-lg)', background:'var(--bg-primary)', border:'2px dashed var(--border-medium)', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', overflow:'hidden', transition:'border 0.2s', flexShrink:0 }}
-            onMouseEnter={e=>e.currentTarget.style.borderColor='var(--accent-blue)'}
-            onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border-medium)'}
+      <SubSection title="Perfil del laboratorio" color="var(--mod-config)" description="Logo y datos del lab">
+        <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
+          <div onClick={() => fileRef.current?.click()} style={{ width: 100, height: 100, borderRadius: 'var(--radius-lg)', background: 'var(--bg-primary)', border: '2px dashed var(--border-medium)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', overflow: 'hidden', transition: 'border 0.2s', flexShrink: 0 }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent-blue)'}
+            onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border-medium)'}
           >
-            {profileImg ? <img src={profileImg} style={{ width:'100%', height:'100%', objectFit:'cover' }} /> : <div style={{ textAlign:'center' }}><div style={{ fontSize:28 }}>📷</div><div style={{ fontSize:11, color:'var(--text-muted)' }}>Subir foto</div></div>}
+            {profileImg ? <img src={profileImg} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <div style={{ textAlign: 'center' }}><div style={{ fontSize: 28 }}>📷</div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Subir foto</div></div>}
           </div>
-          <input ref={fileRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display:'none' }} />
-          <div style={{ flex:1 }}>
-            <div style={{ fontSize:16, fontWeight:700, marginBottom:4 }}>ZERA LAB</div>
-            <div style={{ fontSize:13, color:'var(--text-muted)' }}>Toca el cuadro de la izquierda para subir una foto de perfil del laboratorio</div>
+          <input ref={fileRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display: 'none' }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>ZERA LAB</div>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{profileImg ? 'Click para cambiar el logo' : 'Click para subir el logo del laboratorio'}</div>
           </div>
         </div>
       </SubSection>
 
-      <SubSection title="Producción y pagos" color="var(--mod-produccion)" description="Técnicos, viáticos, retención">
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 24px' }}>
-          <Field label="Nombres de técnicos (separados por coma)"><input value={cfg.tecnicos} onChange={e=>updateCfg('tecnicos',e.target.value)} /></Field>
-          <Field label="Viáticos semanales ($MXN)"><input type="number" value={cfg.viaticos_semanal} onChange={e=>updateCfg('viaticos_semanal',Number(e.target.value))} /></Field>
-          <Field label="Nombre de quien paga gastos adelantados"><input value={cfg.pagador} onChange={e=>updateCfg('pagador',e.target.value)} /></Field>
-          <Field label="Retención de insumos (%)"><input type="number" value={cfg.retencion_pct} onChange={e=>updateCfg('retencion_pct',Number(e.target.value))} /></Field>
-          <Field label="Precio unitario maquila ($MXN/pieza)"><input type="number" value={cfg.precio_maquila} onChange={e=>updateCfg('precio_maquila',Number(e.target.value))} /></Field>
-          <Field label="Tipo de cambio USD → MXN"><input type="number" value={cfg.tc_usd} onChange={e=>updateCfg('tc_usd',Number(e.target.value))} step="0.1" /></Field>
+      <SubSection title="Operación del lab" color="var(--mod-produccion)" description="Parámetros generales — se guardan automáticamente">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+          <Field label="Nombres de técnicos (separados por coma)"><input value={cfg.tecnicos} onChange={e => updateCfg('tecnicos', e.target.value)} /></Field>
+          <Field label="Viáticos semanales ($MXN)"><input type="number" value={cfg.viaticos_semanal} onChange={e => updateCfg('viaticos_semanal', Number(e.target.value))} /></Field>
+          <Field label="Quién paga gastos adelantados"><input value={cfg.pagador} onChange={e => updateCfg('pagador', e.target.value)} /></Field>
+          <Field label="Retención de insumos (%)"><input type="number" value={cfg.retencion_pct} onChange={e => updateCfg('retencion_pct', Number(e.target.value))} /></Field>
+          <Field label="Precio unitario maquila ($MXN/pieza)"><input type="number" value={cfg.precio_maquila} onChange={e => updateCfg('precio_maquila', Number(e.target.value))} /></Field>
+          <Field label="Tipo de cambio USD → MXN"><input type="number" value={cfg.tc_usd} onChange={e => updateCfg('tc_usd', Number(e.target.value))} step="0.1" /></Field>
         </div>
-        <button onClick={()=>alert('Configuración guardada exitosamente')} style={{ marginTop:8, padding:'14px 28px', background:'var(--mod-config)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', cursor:'pointer', fontSize:15, fontWeight:700 }}>Guardar cambios</button>
+        <button onClick={guardarConfig} style={{ marginTop: 8, padding: '14px 28px', background: 'var(--mod-config)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 15, fontWeight: 700 }}>💾 Guardar cambios</button>
       </SubSection>
 
-      <div style={{ fontSize:14, fontWeight:700, color:'var(--text-secondary)', marginBottom:14, letterSpacing:'0.5px' }}>MÁS OPCIONES</div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(280px, 1fr))', gap:10 }}>
-        {[{i:'👤',l:'Usuarios y roles'},{i:'💰',l:'Reglas de comisiones'},{i:'🦷',l:'Precios de trabajos'},{i:'📦',l:'Proveedores'},{i:'📱',l:'WhatsApp Bot'},{i:'🔔',l:'Alertas'},{i:'📹',l:'Reglas de evidencia'},{i:'🏭',l:'Labs externos'},{i:'🕐',l:'Horario del lab'},{i:'💵',l:'Salarios base'},{i:'🏠',l:'Distribución familiar'},{i:'📊',l:'Auditoría'}].map((c,i) => (
-          <div key={i} onClick={()=>alert(`Abriendo configuración de: ${c.l}`)} style={{ background:'var(--bg-card)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-md)', padding:'16px 18px', display:'flex', alignItems:'center', gap:14, cursor:'pointer', transition:'all 0.15s' }}
-            onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent-blue)';e.currentTarget.style.background='var(--bg-card-hover)'}}
-            onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border-subtle)';e.currentTarget.style.background='var(--bg-card)'}}
+      <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 14, letterSpacing: '0.5px', marginTop: 24 }}>ACCESOS RÁPIDOS</div>
+      <div style={{ background: 'rgba(91,141,239,0.08)', border: '1px solid rgba(91,141,239,0.2)', borderRadius: 'var(--radius-md)', padding: 12, marginBottom: 14, fontSize: 12, color: 'var(--text-secondary)' }}>
+        💡 Las opciones marcadas con flecha te llevan al módulo donde está la configuración real. Lo de "Próximamente" aún no está implementado.
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 10 }}>
+        {moreOptions.map((c, i) => (
+          <div key={i} onClick={() => irA(c.goto)} style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', transition: 'all 0.15s', opacity: c.goto ? 1 : 0.6 }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = c.goto ? 'var(--accent-blue)' : 'var(--border-subtle)'; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-subtle)'; }}
           >
-            <span style={{ fontSize:22 }}>{c.i}</span>
-            <span style={{ fontSize:14, fontWeight:600 }}>{c.l}</span>
+            <span style={{ fontSize: 22 }}>{c.i}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{c.l}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.nota}</div>
+            </div>
+            {c.goto && <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>→</span>}
           </div>
         ))}
       </div>
@@ -4973,12 +6383,37 @@ function LoginScreen({ onLogin, onDoctorLogin }) {
 // ============================================================
 function Dashboard({ currentUser, onNavigate }) {
   const role = ROLE_DASHBOARD[currentUser.id] || { stats:[], greeting:'Bienvenido' };
-  const [checkedIn, setCheckedIn] = useState(false);
+  useZeraSync('checkinData');
   const [selectedOrder, setSelectedOrder] = useState(null);
 
+  // Helper compartido: día de la semana corto (Lun 28, Mar 29, etc.)
+  const diaCortoHoy = () => {
+    const hoy = new Date();
+    const nombres = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+    return `${nombres[hoy.getDay()]} ${hoy.getDate()}`;
+  };
+
+  // Lee el check-in de hoy del usuario actual desde checkinData
+  const checkinHoy = React.useMemo(() => {
+    const data = JSON.parse(localStorage.getItem('checkinData') || '[]');
+    return data.find(c => c.nombre === currentUser.name && c.dia === diaCortoHoy());
+  }, []);
+
+  const [checkedIn, setCheckedIn] = useState(!!checkinHoy?.entrada);
+
   const handleCheckin = () => {
+    const hora = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+    const data = JSON.parse(localStorage.getItem('checkinData') || '[]');
+    const dia = diaCortoHoy();
+    const existente = data.find(c => c.nombre === currentUser.name && c.dia === dia);
+    if (existente) {
+      existente.entrada = hora;
+    } else {
+      data.push({ id: Date.now(), nombre: currentUser.name, dia, entrada: hora, salida: null, horas: '0:00', gps: false, fecha: new Date().toISOString() });
+    }
+    localStorage.setItem('checkinData', JSON.stringify(data));
     setCheckedIn(true);
-    setTimeout(() => alert(`✅ Check-in registrado para ${currentUser.name} a las ${new Date().toLocaleTimeString()}`), 100);
+    alert(`✅ Check-in registrado para ${currentUser.name} a las ${hora}`);
   };
 
   const recentOrders = SAMPLE_ORDERS.slice(0, 3);
@@ -5162,9 +6597,10 @@ function Sidebar({ activeModule, onSelect, collapsed, onToggle, currentUser }) {
 // ============================================================
 // HEADER
 // ============================================================
-function Header({ module, currentUser, onLogout, onSidebarToggle, collapsed, isMobileView }) {
+function Header({ module, currentUser, onLogout, onSidebarToggle, collapsed, isMobileView, onNavigate }) {
   const isMobile = window.innerWidth < 768;
   const isSmallMobile = window.innerWidth < 480;
+  const inDashboard = module.id === 'dashboard';
 
   return (
     <header style={{
@@ -5194,6 +6630,30 @@ function Header({ module, currentUser, onLogout, onSidebarToggle, collapsed, isM
           minHeight: 44
         }}>
           {collapsed ? '☰' : '✕'}
+        </button>
+      )}
+
+      {/* BOTÓN VOLVER AL DASHBOARD (visible cuando NO estás en dashboard) */}
+      {!inDashboard && onNavigate && (
+        <button onClick={() => onNavigate('dashboard')} title="Volver al Dashboard" style={{
+          padding: isSmallMobile ? '6px 10px' : '8px 14px',
+          background: 'var(--bg-card)',
+          color: 'var(--text-secondary)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: 'var(--radius-md)',
+          cursor: 'pointer',
+          fontSize: isSmallMobile ? 12 : 13,
+          fontWeight: 600,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          minHeight: 36,
+          whiteSpace: 'nowrap'
+        }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-card-hover)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-card)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+        >
+          <span style={{ fontSize: 14 }}>←</span> {isSmallMobile ? '' : 'Dashboard'}
         </button>
       )}
 
@@ -5371,6 +6831,7 @@ function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [currentDoctor, setCurrentDoctor] = useState(null); // Para el portal de doctores (login interno)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [syncStatus, setSyncStatus] = useState('connecting');
 
   // Detectar cambios de tamaño de pantalla
   useEffect(() => {
@@ -5381,6 +6842,17 @@ function App() {
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Inicializar sincronización con Supabase al cargar
+  useEffect(() => {
+    DBSync.init()
+      .then(() => setSyncStatus('connected'))
+      .catch((e) => {
+        console.error('Error inicializando sync:', e);
+        setSyncStatus('offline');
+      });
+    return () => DBSync.stop();
   }, []);
 
   const handleLogin = (user) => setSession({ type: 'team', user });
@@ -5402,6 +6874,7 @@ function App() {
       case 'checkin': return <CheckinModule currentUser={currentUser} onNavigate={setActiveModule} />;
       case 'mensajeria': return <MensajeriaModule onNavigate={setActiveModule} />;
       case 'cobros': return <CobrosModule onNavigate={setActiveModule} />;
+      case 'notas': return <NotasModule onNavigate={setActiveModule} />;
       case 'lab-externo': return <LabExternoModule onNavigate={setActiveModule} />;
       case 'inventario': return <InventarioModule onNavigate={setActiveModule} />;
       case 'tarifas': return <TarifasModule onNavigate={setActiveModule} />;
@@ -5423,8 +6896,20 @@ function App() {
     <div style={{ display:'flex', height:'100vh', width:'100%' }}>
       <Sidebar activeModule={activeModule} onSelect={setActiveModule} collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} currentUser={currentUser} />
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', width:'100%' }}>
-        <Header module={mod} currentUser={currentUser} onLogout={handleLogout} onSidebarToggle={() => setCollapsed(!collapsed)} collapsed={collapsed} isMobileView={isMobile} />
+        <Header module={mod} currentUser={currentUser} onLogout={handleLogout} onSidebarToggle={() => setCollapsed(!collapsed)} collapsed={collapsed} isMobileView={isMobile} onNavigate={setActiveModule} />
         <main style={{ flex:1, overflow:'auto', padding: window.innerWidth < 480 ? mainPaddingSmall : mainPadding, paddingRight: window.innerWidth < 480 ? 8 : 28 }}>{renderContent()}</main>
+      </div>
+      {/* Indicador de sincronización en la esquina inferior derecha */}
+      <div style={{
+        position: 'fixed', bottom: 12, right: 12, padding: '6px 12px',
+        background: syncStatus === 'connected' ? 'rgba(52,211,153,0.15)' : (syncStatus === 'offline' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)'),
+        border: `1px solid ${syncStatus === 'connected' ? 'rgba(52,211,153,0.4)' : (syncStatus === 'offline' ? 'rgba(239,68,68,0.4)' : 'rgba(245,158,11,0.4)')}`,
+        borderRadius: 20, fontSize: 11, fontWeight: 600,
+        color: syncStatus === 'connected' ? '#34D399' : (syncStatus === 'offline' ? '#EF4444' : '#F59E0B'),
+        display: 'flex', alignItems: 'center', gap: 6, zIndex: 100, pointerEvents: 'none'
+      }}>
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'currentColor', animation: syncStatus === 'connecting' ? 'pulse 1.5s infinite' : 'none' }} />
+        {syncStatus === 'connected' ? 'En vivo' : (syncStatus === 'offline' ? 'Sin conexión' : 'Conectando...')}
       </div>
     </div>
   );
