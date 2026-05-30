@@ -464,6 +464,30 @@ const DB = (() => {
 // Exponer globalmente para depuración
 if (typeof window !== 'undefined') window.DB = DB;
 
+// Función para resetear TODO localStorage (para limpiar cache cuando hay datos viejos)
+function resetearLocalStorage() {
+  const claves = [
+    'registroTrabajos','produccionOrdenes','cobrosRegistro','comisionesGeneradas',
+    'comisionesFidel','tarifasPrecios','salariosBase','reglasComisiones',
+    'auditoriaFinanciera','costosOrdenes','gastosEscaneo','notasIA',
+    'checkinData','labExternoSinterizado','ordenesCargadas','ordenesEntrada',
+    'tipoCambioUSDMXN','configLab'
+  ];
+  claves.forEach(k => {
+    localStorage.removeItem(k);
+    localStorage.removeItem('cache_' + k);
+    localStorage.removeItem('pending_' + k);
+  });
+  // Cache de las tablas también
+  ['registro_trabajos','produccion_ordenes','cobros','comisiones_generadas','comisiones_fidel',
+   'tarifas_precios','salarios_base','reglas_comisiones','auditoria_financiera',
+   'costos_ordenes','gastos_escaneo','notas_ia'].forEach(t => {
+    localStorage.removeItem('cache_' + t);
+    localStorage.removeItem('pending_' + t);
+  });
+}
+if (typeof window !== 'undefined') window.resetearLocalStorage = resetearLocalStorage;
+
 // ============================================================
 // DBSync — Sincronización transparente localStorage ⇄ Supabase
 // ============================================================
@@ -509,6 +533,10 @@ const DBSync = (() => {
     'gastosEscaneo':        { table: 'gastos_escaneo' },
     'notasIA':              { table: 'notas_ia' },
     'reglasComisiones':     { table: 'reglas_comisiones' },
+    'doctoresLab':          { table: 'doctores' },
+    'contaduria':           { table: 'contaduria' },
+    'gastosFijosLab':       { table: 'gastos_fijos_lab' },
+    'configFamiliar':       { table: 'config_familiar' },
     // Salarios: en localStorage es { Rafael: 4500, Fidel: 3500 } pero en BD es array
     'salariosBase': {
       table: 'salarios_base',
@@ -544,6 +572,15 @@ const DBSync = (() => {
     notify(lsKey);
   };
 
+  // Estado global de errores de sync (visible al usuario)
+  const syncErrors = [];
+  const notifyError = (lsKey, msg) => {
+    syncErrors.push({ key: lsKey, msg, time: Date.now() });
+    if (syncErrors.length > 10) syncErrors.shift();
+    try { window.dispatchEvent(new CustomEvent('zera-sync-error', { detail: { key: lsKey, msg } })); } catch {}
+    console.error(`❌ Sync error [${lsKey}]:`, msg);
+  };
+
   // Push: lo que está en localStorage → Supabase
   // Estrategia: leer el array entero del localStorage, hacer upsert masivo
   const push = async (lsKey) => {
@@ -558,19 +595,32 @@ const DBSync = (() => {
     // Convertir camelCase → snake_case para columnas de Supabase
     rows = rows.map(r => {
       const snake = toSnake(r);
-      // Limpiar timestamps client-side que PostgreSQL maneja
+      // Limpiar campos manejados por DB
       delete snake.created_at;
       delete snake.updated_at;
+      // Asegurar ID numérico (PostgreSQL BIGINT no acepta strings)
+      if (snake.id && typeof snake.id === 'string') {
+        const n = parseInt(snake.id, 10);
+        snake.id = isNaN(n) ? Date.now() + Math.floor(Math.random() * 1000) : n;
+      }
+      if (!snake.id) snake.id = Date.now() + Math.floor(Math.random() * 1000);
       return snake;
     });
     const sb = initSupabase();
-    if (!sb) return;
+    if (!sb) {
+      notifyError(lsKey, 'Supabase no inicializado');
+      return;
+    }
     try {
       const onConflict = lsKey === 'salariosBase' ? 'empleado' : 'id';
       const { error } = await sb.from(conf.table).upsert(rows, { onConflict });
-      if (error) console.warn(`Push ${lsKey} error:`, error.message);
+      if (error) {
+        notifyError(lsKey, `${error.message} (code: ${error.code})`);
+        console.error('Detalles del error:', error);
+        console.error('Datos que se intentaron enviar:', rows.slice(0, 2));
+      }
     } catch (e) {
-      console.warn(`Push ${lsKey} failed:`, e.message);
+      notifyError(lsKey, e.message);
     }
   };
 
@@ -706,9 +756,11 @@ function calcularComisionesPara(trabajo, empleadoAsignado) {
   return comisiones;
 }
 
-// Procesador maestro: cuando una orden se marca como ENTREGADA, dispara cobro + comisiones + mensajería + auditoría
+// Procesador maestro: dispara cobro + comisiones + mensajería + auditoría
+// Se ejecuta al llegar a CALIDAD (genera cobro pendiente) y al ENTREGAR (actualiza)
 function procesarTrabajoCompletado(orden) {
-  if (!orden || orden.estado !== 'entregado') return;
+  if (!orden) return;
+  if (orden.estado !== 'calidad' && orden.estado !== 'entregar' && orden.estado !== 'entregado') return;
 
   const ahora = new Date().toLocaleString('es-MX');
   const ahoraISO = new Date().toISOString();
@@ -1271,14 +1323,11 @@ const MODULES = [
   { id: 'produccion',  icon: '🏭', label: 'Producción',      desc: 'Tablero de trabajo', color: 'var(--mod-produccion)' },
   { id: 'checkin',     icon: '📍', label: 'Asistencia',      desc: 'Check-in diario', color: 'var(--mod-checkin)' },
   { id: 'mensajeria',  icon: '🚗', label: 'Mensajería',      desc: 'Recolecciones', color: 'var(--mod-mensajeria)' },
-  { id: 'cobros',      icon: '💳', label: 'Cobros',          desc: 'Pagos de doctores', color: 'var(--mod-cobros)' },
-  { id: 'notas',       icon: '📒', label: 'Notas por Doctor', desc: 'Deuda y movimientos por doctor', color: 'var(--mod-cobros)' },
+  { id: 'doctores-admin', icon: '👨‍⚕️', label: 'Doctores',        desc: 'Lista interna de doctores', color: 'var(--mod-doctores)' },
   { id: 'lab-externo', icon: '🔬', label: 'Lab Externo',     desc: 'Fresado y servicios externos', color: 'var(--mod-lab)' },
   { id: 'inventario',  icon: '📦', label: 'Inventario',      desc: 'Materiales', color: 'var(--mod-inventario)' },
-  { id: 'tarifas',     icon: '💰', label: 'Tarifas',         desc: 'Lista de precios', color: 'var(--mod-finanzas)' },
-  { id: 'finanzas',    icon: '📊', label: 'Finanzas',        desc: 'Dinero del lab', color: 'var(--mod-finanzas)' },
-  { id: 'nomina',      icon: '💵', label: 'Nómina',          desc: 'Sueldos y comisiones', color: 'var(--mod-nomina)' },
-  { id: 'corte',       icon: '📑', label: 'Corte Semanal',   desc: 'Resumen de la semana', color: 'var(--mod-corte)' },
+  { id: 'finanzas',    icon: '💰', label: 'Finanzas',        desc: 'Cobros, nómina, corte, tarifas y familia', color: 'var(--mod-finanzas)' },
+  { id: 'contaduria',  icon: '📄', label: 'Contaduría',      desc: 'Facturas pendientes y emitidas', color: 'var(--mod-finanzas)' },
   { id: 'doctores',    icon: '🦷', label: 'Portal Doctores', desc: 'Para los doctores', color: 'var(--mod-doctores)' },
   { id: 'config',      icon: '⚙️', label: 'Configuración',   desc: 'Ajustes del sistema', color: 'var(--mod-config)' },
 ];
@@ -2137,7 +2186,9 @@ function OrdenesModule({ onNavigate }) {
     doctor: '',
     paciente: '',
     trabajos: [trabajoVacio()],
-    notas: ''
+    notas: '',
+    tipoImpresion: 'fisica',          // fisica | digital | escaneo
+    escanoPor: ''                      // si es escaneo: Abril o Juan
   });
 
   const [form, setForm] = React.useState(formularioVacio());
@@ -2425,28 +2476,37 @@ REGLAS:
       setErrorMsg('Agrega al menos un trabajo (tipo es obligatorio)');
       return;
     }
+    // Si es escaneo, asignar automáticamente al equipo Abril/Juan
+    if (form.tipoImpresion === 'escaneo') {
+      form.escanoPor = 'Abril/Juan';
+    }
 
     let ordenFinal;
+    const datosComunes = {
+      folio: form.folio.trim(),
+      doctor: form.doctor.trim(),
+      paciente: form.paciente.trim(),
+      trabajos: trabajosValidos.map(t => ({ ...t, unidades: parseInt(t.unidades, 10) || 1 })),
+      notas: form.notas.trim(),
+      tipoImpresion: form.tipoImpresion || 'fisica',
+      escanoPor: form.tipoImpresion === 'escaneo' ? form.escanoPor : null
+    };
+
     if (editandoId) {
+      const original = registro.find(o => o.id === editandoId);
       const actualizada = {
-        ...registro.find(o => o.id === editandoId),
-        folio: form.folio.trim() || registro.find(o => o.id === editandoId)?.folio,
-        doctor: form.doctor.trim(),
-        paciente: form.paciente.trim(),
-        trabajos: trabajosValidos.map(t => ({ ...t, unidades: parseInt(t.unidades, 10) || 1 })),
-        notas: form.notas.trim(),
-        foto: form.fotoTemp || registro.find(o => o.id === editandoId)?.foto || null
+        ...original,
+        ...datosComunes,
+        folio: datosComunes.folio || original?.folio,
+        foto: form.fotoTemp || original?.foto || null
       };
       guardarRegistro(registro.map(o => o.id === editandoId ? actualizada : o));
       ordenFinal = actualizada;
     } else {
       ordenFinal = {
         id: Date.now(),
-        folio: form.folio.trim() || generarFolio(),
-        doctor: form.doctor.trim(),
-        paciente: form.paciente.trim(),
-        trabajos: trabajosValidos.map(t => ({ ...t, unidades: parseInt(t.unidades, 10) || 1 })),
-        notas: form.notas.trim(),
+        ...datosComunes,
+        folio: datosComunes.folio || generarFolio(),
         foto: form.fotoTemp || null,
         fechaEntrada: new Date().toISOString(),
         origen: form.fotoTemp ? 'foto-ia' : 'manual'
@@ -2456,6 +2516,36 @@ REGLAS:
 
     // 🔗 SINCRONIZAR CON PRODUCCIÓN
     sincronizarConProduccion(ordenFinal);
+
+    // 💵 SI ES ESCANEO: generar gasto a Abril/Juan automáticamente
+    if (ordenFinal.tipoImpresion === 'escaneo' && ordenFinal.escanoPor) {
+      const totalUnidades = ordenFinal.trabajos.reduce((s, t) => s + (parseInt(t.unidades, 10) || 1), 0);
+      const tarifas = JSON.parse(localStorage.getItem('tarifasPrecios') || '[]');
+      const tarifaEscaneo = tarifas.find(t => (t.tipo || '').toLowerCase().includes('escaneo'));
+      const costoPorUnidad = tarifaEscaneo?.costoBase || 10; // $10 MXN por unidad por defecto
+      const monedaCosto = tarifaEscaneo?.moneda || 'MXN';
+      const fecha = new Date().toLocaleString('es-MX');
+
+      const gastos = JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
+      // Evitar duplicados al editar
+      const sinDuplicado = gastos.filter(g => g.ordenId !== ordenFinal.id);
+      sinDuplicado.unshift({
+        id: Date.now() + Math.random(),
+        ordenId: ordenFinal.id,
+        folio: ordenFinal.folio,
+        doctor: ordenFinal.doctor,
+        paciente: ordenFinal.paciente,
+        trabajo: ordenFinal.trabajos.map(t => t.tipo).join(', '),
+        unidades: totalUnidades,
+        costoUnidad: costoPorUnidad,
+        costoTotal: costoPorUnidad * totalUnidades,
+        moneda: monedaCosto,
+        persona: ordenFinal.escanoPor,
+        fecha,
+        fechaISO: new Date().toISOString()
+      });
+      localStorage.setItem('gastosEscaneo', JSON.stringify(sinDuplicado));
+    }
 
     setModalAbierto(false);
     setModoCaptura(null);
@@ -2711,7 +2801,10 @@ REGLAS:
                   </div>
                   <div>
                     <label style={labelStyle}>Doctor *</label>
-                    <input type="text" value={form.doctor} onChange={(e) => setForm({ ...form, doctor: e.target.value })} placeholder="Dr. Pérez" style={inputStyle} />
+                    <input list="lista-doctores-ord" type="text" value={form.doctor} onChange={(e) => setForm({ ...form, doctor: e.target.value })} placeholder="Dr. Pérez (escribe o elige)" style={inputStyle} />
+                    <datalist id="lista-doctores-ord">
+                      {(JSON.parse(localStorage.getItem('doctoresLab') || '[]')).map(d => <option key={d.id} value={d.nombre} />)}
+                    </datalist>
                   </div>
                 </div>
                 <div>
@@ -2763,6 +2856,39 @@ REGLAS:
                       </div>
                     ))}
                   </div>
+                </div>
+
+                {/* TIPO DE IMPRESIÓN */}
+                <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '12px' }}>
+                  <label style={{ ...labelStyle, marginBottom: 8, fontSize: 12, color: 'var(--text-primary)' }}>📐 ¿Cómo se hizo el modelo?</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+                    {[
+                      { id: 'fisica',  label: '📋 Física',  desc: 'Papel impreso' },
+                      { id: 'digital', label: '💻 Digital', desc: 'Doctor envió STL' },
+                      { id: 'escaneo', label: '🔍 Escaneo', desc: 'Lo hizo Abril/Juan' }
+                    ].map(opt => (
+                      <button key={opt.id} type="button" onClick={() => setForm({ ...form, tipoImpresion: opt.id })}
+                        style={{
+                          padding: '10px 8px',
+                          background: form.tipoImpresion === opt.id ? 'var(--mod-ordenes)' : 'var(--bg-input)',
+                          color: form.tipoImpresion === opt.id ? '#fff' : 'var(--text-secondary)',
+                          border: form.tipoImpresion === opt.id ? '1px solid var(--mod-ordenes)' : '1px solid var(--border-subtle)',
+                          borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                          display: 'flex', flexDirection: 'column', gap: 2
+                        }}>
+                        <span>{opt.label}</span>
+                        <span style={{ fontSize: 10, opacity: 0.8, fontWeight: 400 }}>{opt.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {form.tipoImpresion === 'escaneo' && (
+                    <div style={{ marginTop: 10, padding: 10, background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.3)', borderRadius: 6 }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-primary)', fontWeight: 600, marginBottom: 4 }}>👥 Escaneo asignado al equipo Abril/Juan</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        💵 Se genera automáticamente un gasto por cada unidad escaneada en Nómina (configurado en Tarifas: "Escaneo")
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -2852,6 +2978,9 @@ function ProduccionIntegradaModule({ onNavigate }) {
 
   // Lightbox para ver fotos de evidencia en grande
   const [lightboxFoto, setLightboxFoto] = React.useState(null);
+
+  // Dialog "Listo para entregar" (captura foto orden + nota + folios + factura)
+  const [listoEntregarDialog, setListoEntregarDialog] = React.useState({ visible: false, orden: null, fotoOrden: null, fotoNota: null, folioOrden: '', folioNota: '', requiereFactura: false });
 
   // Function to get default assignment based on destination phase
   const getDefaultAssignment = (nuevoEstado) => {
@@ -3072,29 +3201,10 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
 
     // EFECTOS AUTOMÁTICOS según fase destino:
     if (nuevoEstado === 'sinterizado') {
-      // Enlazar con Lab Externo
-      const labItems = JSON.parse(localStorage.getItem('labExternoSinterizado') || '[]');
-      if (!labItems.some(i => i.ordenId === orderId)) {
-        labItems.unshift({
-          id: Date.now(),
-          ordenId: orderId,
-          folio: actualizada.folio,
-          doctor: actualizada.doctor,
-          paciente: actualizada.paciente,
-          trabajo: actualizada.trabajo,
-          unidades: actualizada.unidades,
-          estado: 'pendiente', // pendiente | terminado
-          costo: 5, // 5 USD por sinterizado
-          moneda: 'USD',
-          fechaEnvio: fecha,
-          fechaEnvioISO: ahora.toISOString(),
-          fechaTerminado: null
-        });
-        localStorage.setItem('labExternoSinterizado', JSON.stringify(labItems));
-      }
+      enlazarSinterizadoLabExterno(actualizada);
     }
 
-    if (nuevoEstado === 'entregado') {
+    if (nuevoEstado === 'calidad' || nuevoEstado === 'entregar' || nuevoEstado === 'entregado') {
       procesarTrabajoCompletado(actualizada);
     }
   };
@@ -3120,11 +3230,67 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
       setOrdenes(nuevasOrdenes);
       localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
 
-      // Cuando se marca como ENTREGADO, disparar cobros + comisiones + mensajería
-      if (nuevoEstado === 'entregado') {
-        const ordenActualizada = nuevasOrdenes.find(o => o.id === orderId);
+      const ordenActualizada = nuevasOrdenes.find(o => o.id === orderId);
+
+      // Al llegar a SINTERIZADO: enlazar con Lab Externo + auto-gasto
+      if (nuevoEstado === 'sinterizado') {
+        enlazarSinterizadoLabExterno(ordenActualizada);
+      }
+
+      // Al llegar a CALIDAD (y siguientes), disparar cobros + comisiones + mensajería
+      if (nuevoEstado === 'calidad' || nuevoEstado === 'entregar' || nuevoEstado === 'entregado') {
         procesarTrabajoCompletado(ordenActualizada);
       }
+    }
+  };
+
+  // Helper para enlazar sinterizado con lab externo y registrar gasto
+  const enlazarSinterizadoLabExterno = (orden) => {
+    if (!orden) return;
+    const labItems = JSON.parse(localStorage.getItem('labExternoSinterizado') || '[]');
+    if (labItems.some(i => i.ordenId === orden.id)) return; // ya existe
+
+    const ahora = new Date();
+    const fecha = ahora.toLocaleString('es-MX');
+    const costoUSD = 5;
+    const tc = parseFloat(localStorage.getItem('tipoCambioUSDMXN')) || 17.5;
+
+    labItems.unshift({
+      id: Date.now(),
+      ordenId: orden.id,
+      folio: orden.folio,
+      doctor: orden.doctor,
+      paciente: orden.paciente,
+      trabajo: orden.trabajo,
+      unidades: orden.unidades || 1,
+      estado: 'pendiente',
+      costo: costoUSD,
+      moneda: 'USD',
+      fechaEnvio: fecha,
+      fechaEnvioISO: ahora.toISOString(),
+      fechaTerminado: null
+    });
+    localStorage.setItem('labExternoSinterizado', JSON.stringify(labItems));
+
+    // Registrar gasto en costosOrdenes para que aparezca en Finanzas → egresos
+    const costos = JSON.parse(localStorage.getItem('costosOrdenes') || '[]');
+    if (!costos.some(c => c.orderId === orden.id && c.trabajo?.includes('Sinterizado'))) {
+      costos.unshift({
+        id: Date.now() + 1,
+        orderId: orden.id,
+        folio: orden.folio,
+        trabajo: `Sinterizado externo — ${orden.folio}`,
+        unidades: 1,
+        costoUnitario: costoUSD * tc,
+        costoTotal: costoUSD * tc,
+        moneda: 'MXN',
+        montoOriginal: costoUSD,
+        monedaOriginal: 'USD',
+        fecha,
+        fechaISO: ahora.toISOString(),
+        estado: 'pendiente'
+      });
+      localStorage.setItem('costosOrdenes', JSON.stringify(costos));
     }
   };
 
@@ -3142,9 +3308,15 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
     setOrdenes(nuevasOrdenes);
     localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
 
-    // Cuando se marca como ENTREGADO, disparar cobros + comisiones + mensajería
-    if (assignmentDialog.nuevoEstado === 'entregado') {
-      const ordenActualizada = nuevasOrdenes.find(o => o.id === assignmentDialog.orden.id);
+    const ordenActualizada = nuevasOrdenes.find(o => o.id === assignmentDialog.orden.id);
+
+    // Al llegar a SINTERIZADO: enlazar con Lab Externo + auto-gasto
+    if (assignmentDialog.nuevoEstado === 'sinterizado') {
+      enlazarSinterizadoLabExterno(ordenActualizada);
+    }
+
+    // Al llegar a CALIDAD (y siguientes), disparar cobros + comisiones + mensajería
+    if (assignmentDialog.nuevoEstado === 'calidad' || assignmentDialog.nuevoEstado === 'entregar' || assignmentDialog.nuevoEstado === 'entregado') {
       procesarTrabajoCompletado(ordenActualizada);
     }
 
@@ -3397,21 +3569,13 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
               {selectedOrder.estado === 'calidad' && (
                 <div style={{ marginBottom: '24px', padding: '16px', background: 'rgba(52, 211, 153, 0.1)', borderRadius: 'var(--radius-md)', border: '2px solid rgba(52, 211, 153, 0.3)' }}>
                   <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#34D399', marginBottom: '8px' }}>✅ CONTROL DE CALIDAD</h3>
-                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>Cuando esté aprobada, pásala a "Entregar" para que Kevin la lleve. Aún NO se genera cobro ni comisión.</p>
-                  <div style={{ display: 'flex', gap: '8px', flexDirection: 'column' }}>
-                    <button
-                      onClick={() => setNotaFinancieraDialog({ ...notaFinancieraDialog, visible: true, orden: selectedOrder })}
-                      style={{ width: '100%', padding: '10px 16px', background: 'rgba(52, 211, 153, 0.2)', color: '#34D399', border: '1px solid #34D399', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
-                    >
-                      📸 Capturar Nota Física (opcional)
-                    </button>
-                    <button
-                      onClick={() => handleMoverOrden(selectedOrder.id, 'entregar')}
-                      style={{ width: '100%', padding: '12px 16px', background: '#FBBF24', color: '#000', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 700, fontSize: '13px' }}
-                    >
-                      ✅ Aprobar → Mover a ENTREGAR
-                    </button>
-                  </div>
+                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>Cuando esté aprobada, captura las fotos y pasa a "Entregar".</p>
+                  <button
+                    onClick={() => setListoEntregarDialog({ visible: true, orden: selectedOrder, fotoOrden: null, fotoNota: null, folioOrden: selectedOrder.folio || '', folioNota: '', requiereFactura: false })}
+                    style={{ width: '100%', padding: '12px 16px', background: '#FBBF24', color: '#000', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 700, fontSize: '13px' }}
+                  >
+                    📸 Listo para entregar (capturar fotos + nota)
+                  </button>
                 </div>
               )}
 
@@ -3669,6 +3833,107 @@ RESPONDE SOLO CON ESTE JSON, SIN EXPLICACIONES:
           </div>
         </div>
       )}
+
+      {/* MODAL: Listo para entregar (foto orden + foto nota + folios + requiere factura) */}
+      {listoEntregarDialog.visible && listoEntregarDialog.orden && (() => {
+        const d = listoEntregarDialog;
+        const set = (changes) => setListoEntregarDialog({ ...d, ...changes });
+        const handleFoto = (campo) => (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = (ev) => set({ [campo]: ev.target.result });
+          reader.readAsDataURL(file);
+        };
+        const confirmar = () => {
+          if (!d.fotoNota) { alert('La foto de la NOTA es obligatoria'); return; }
+          if (!d.folioNota.trim()) { alert('El folio de la nota es obligatorio'); return; }
+
+          const ahora = new Date();
+          const fecha = ahora.toLocaleString('es-MX');
+          // Guardar fotos como evidencia de la orden
+          const nuevasOrdenes = ordenes.map(o => {
+            if (o.id !== d.orden.id) return o;
+            const evidencias = [...(o.fotos_evidencia || [])];
+            if (d.fotoOrden) evidencias.push({ nombre: `Orden ${d.folioOrden}`, data: d.fotoOrden, fecha, tipo: 'orden' });
+            if (d.fotoNota) evidencias.push({ nombre: `Nota ${d.folioNota}`, data: d.fotoNota, fecha, tipo: 'nota' });
+            return {
+              ...o,
+              estado: 'entregar',
+              folio_nota: d.folioNota,
+              requiere_factura: d.requiereFactura,
+              fotos_evidencia: evidencias,
+              historial: [...(o.historial || []), { fase: 'entregar', fecha, usuario: o.asignado_a || 'Sistema', notas: `Listo para entregar. Nota: ${d.folioNota}${d.requiereFactura ? ' (REQUIERE FACTURA)' : ''}` }]
+            };
+          });
+          setOrdenes(nuevasOrdenes);
+          localStorage.setItem('produccionOrdenes', JSON.stringify(nuevasOrdenes));
+          const ordenActualizada = nuevasOrdenes.find(o => o.id === d.orden.id);
+          procesarTrabajoCompletado(ordenActualizada);
+
+          // Si requiere factura, agregar a contaduría
+          if (d.requiereFactura) {
+            const cont = JSON.parse(localStorage.getItem('contaduria') || '[]');
+            cont.unshift({
+              id: Date.now(),
+              ordenId: d.orden.id,
+              folio: d.orden.folio,
+              folioNota: d.folioNota,
+              doctor: d.orden.doctor,
+              paciente: d.orden.paciente,
+              trabajo: d.orden.trabajo,
+              estado: 'pendiente', // pendiente | facturado
+              fechaSolicitud: fecha,
+              fechaSolicitudISO: ahora.toISOString(),
+              fechaFactura: null,
+              notas: ''
+            });
+            localStorage.setItem('contaduria', JSON.stringify(cont));
+          }
+
+          setListoEntregarDialog({ visible: false, orden: null, fotoOrden: null, fotoNota: null, folioOrden: '', folioNota: '', requiereFactura: false });
+          setSelectedOrder(ordenActualizada);
+        };
+
+        return (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 3000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+            <div style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', padding: 24, maxWidth: 560, width: '100%', maxHeight: '92vh', overflowY: 'auto', border: '2px solid #FBBF24' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>📸 Listo para entregar — {d.orden.folio}</h2>
+                <button onClick={() => setListoEntregarDialog({ visible: false, orden: null, fotoOrden: null, fotoNota: null, folioOrden: '', folioNota: '', requiereFactura: false })} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', fontSize: 20, cursor: 'pointer' }}>✕</button>
+              </div>
+              <div style={{ display: 'grid', gap: 14 }}>
+                {/* Foto orden */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>📋 Foto de la ORDEN (opcional)</label>
+                  <input type="file" accept="image/*" onChange={handleFoto('fotoOrden')} style={{ width: '100%', padding: 8, background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 6, color: '#fff' }} />
+                  {d.fotoOrden && <img src={d.fotoOrden} alt="Orden" style={{ marginTop: 8, maxHeight: 100, borderRadius: 4 }} />}
+                  <input type="text" value={d.folioOrden} onChange={(e) => set({ folioOrden: e.target.value })} placeholder="Folio orden" style={{ width: '100%', marginTop: 6, padding: 8, background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 6, color: '#fff', fontSize: 13 }} />
+                </div>
+                {/* Foto nota */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--warning)', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>📝 Foto de la NOTA *</label>
+                  <input type="file" accept="image/*" onChange={handleFoto('fotoNota')} style={{ width: '100%', padding: 8, background: 'var(--bg-input)', border: '1px solid var(--warning)', borderRadius: 6, color: '#fff' }} />
+                  {d.fotoNota && <img src={d.fotoNota} alt="Nota" style={{ marginTop: 8, maxHeight: 100, borderRadius: 4 }} />}
+                  <input type="text" value={d.folioNota} onChange={(e) => set({ folioNota: e.target.value })} placeholder="Folio de la nota *" style={{ width: '100%', marginTop: 6, padding: 8, background: 'var(--bg-input)', border: '1px solid var(--warning)', borderRadius: 6, color: '#fff', fontSize: 13 }} />
+                </div>
+                {/* Requiere factura */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, background: d.requiereFactura ? 'rgba(91,141,239,0.15)' : 'var(--bg-card)', border: `1px solid ${d.requiereFactura ? 'var(--accent-blue)' : 'var(--border-subtle)'}`, borderRadius: 6, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={d.requiereFactura} onChange={(e) => set({ requiereFactura: e.target.checked })} style={{ width: 18, height: 18, cursor: 'pointer' }} />
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: d.requiereFactura ? 'var(--accent-blue)' : 'var(--text-primary)' }}>📄 Requiere factura</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Si está marcado, se enviará automáticamente a Contaduría (Montserrat)</div>
+                  </div>
+                </label>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
+                <button onClick={() => setListoEntregarDialog({ visible: false, orden: null, fotoOrden: null, fotoNota: null, folioOrden: '', folioNota: '', requiereFactura: false })} style={{ flex: 1, padding: '12px', background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', cursor: 'pointer' }}>Cancelar</button>
+                <button onClick={confirmar} style={{ flex: 2, padding: '12px', background: '#FBBF24', color: '#000', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 700 }}>✅ Confirmar y pasar a Entregar</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* LIGHTBOX: Ver foto de evidencia en grande */}
       {lightboxFoto && (
@@ -4662,20 +4927,178 @@ function InventarioModule() {
 // ============================================================
 // FINANZAS — con toggles funcionales
 // ============================================================
-function FinanzasModule({ currentUser }) {
+// ============================================================
+// MÓDULO FINANZAS (consolidado)
+// Tabs: Resumen | Cobros | Notas x Doctor | Nómina | Tarifas | Corte semanal | Familiar
+// ============================================================
+function FinanzasModule({ currentUser, onNavigate }) {
   useZeraSync();
-  const [vista, setVista] = useState('mes');
   const canEdit = !currentUser || (currentUser.id !== 'rafael' && currentUser.id !== 'montserrat');
+  const [tab, setTab] = React.useState('resumen');
 
-  // Calcular periodo
+  const tabs = [
+    { id: 'resumen',   label: '📊 Resumen' },
+    { id: 'cobros',    label: '💳 Cobros' },
+    { id: 'notas',     label: '📒 Notas x Doctor' },
+    { id: 'nomina',    label: '💵 Nómina' },
+    { id: 'tarifas',   label: '🦷 Tarifas' },
+    { id: 'corte',     label: '📑 Corte semanal' },
+    { id: 'gastoslab', label: '🏭 Gastos Lab' },
+    { id: 'familiar',  label: '🏠 Familiar' }
+  ];
+
+  return (
+    <div style={{ animation: 'fadeIn 0.3s' }}>
+      <SectionHeader title="Finanzas" subtitle="Todo lo de dinero: ingresos, egresos, nómina, tarifas y familia" color="var(--mod-finanzas)" icon="💰" />
+
+      {/* TABS */}
+      <div style={{ display: 'flex', gap: 4, background: 'var(--bg-card)', borderRadius: 'var(--radius-md)', padding: 4, marginBottom: 20, flexWrap: 'wrap', overflow: 'auto' }}>
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            padding: '10px 14px', borderRadius: 'var(--radius-sm)',
+            background: tab === t.id ? 'var(--mod-finanzas)' : 'transparent',
+            border: 'none', color: tab === t.id ? '#fff' : 'var(--text-muted)',
+            cursor: 'pointer', fontSize: 13, fontWeight: tab === t.id ? 700 : 500,
+            transition: 'all 0.15s', whiteSpace: 'nowrap'
+          }}>{t.label}</button>
+        ))}
+      </div>
+
+      {tab === 'resumen' && <FinanzasResumenTab />}
+      {tab === 'cobros'   && <CobrosModule onNavigate={onNavigate} />}
+      {tab === 'notas'    && <NotasModule onNavigate={onNavigate} />}
+      {tab === 'nomina'   && <NominaModule />}
+      {tab === 'tarifas'  && <TarifasModule />}
+      {tab === 'corte'    && <CorteModule />}
+      {tab === 'gastoslab' && <GastosLabTab />}
+      {tab === 'familiar' && <DistribucionFamiliarTab />}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+// TAB GASTOS DEL LAB (insumos, agua, luz, café, kleenex...)
+// ------------------------------------------------------------
+function GastosLabTab() {
+  useZeraSync();
+  const [cfg, setCfg] = React.useState(() => {
+    const saved = localStorage.getItem('gastosFijosLab');
+    return saved ? JSON.parse(saved) : { retencionPct: 8, gastos: [] };
+  });
+  const [nuevoGasto, setNuevoGasto] = React.useState({ concepto: '', monto: '', moneda: 'MXN', frecuencia: 'semanal' });
+
+  const guardar = (nuevo) => {
+    setCfg(nuevo);
+    localStorage.setItem('gastosFijosLab', JSON.stringify(nuevo));
+  };
+
+  const agregar = () => {
+    if (!nuevoGasto.concepto.trim() || !nuevoGasto.monto) {
+      alert('Concepto y monto son obligatorios');
+      return;
+    }
+    guardar({
+      ...cfg,
+      gastos: [...(cfg.gastos || []), {
+        id: Date.now(),
+        concepto: nuevoGasto.concepto.trim(),
+        monto: parseFloat(nuevoGasto.monto) || 0,
+        moneda: nuevoGasto.moneda,
+        frecuencia: nuevoGasto.frecuencia,
+        fecha: new Date().toISOString()
+      }]
+    });
+    setNuevoGasto({ concepto: '', monto: '', moneda: 'MXN', frecuencia: 'semanal' });
+  };
+
+  const eliminar = (id) => {
+    guardar({ ...cfg, gastos: cfg.gastos.filter(g => g.id !== id) });
+  };
+
+  const tc = parseFloat(localStorage.getItem('tipoCambioUSDMXN')) || 17.5;
+  const totalSemanalMXN = (cfg.gastos || []).reduce((s, g) => {
+    const m = g.moneda === 'USD' ? g.monto * tc : g.monto;
+    if (g.frecuencia === 'mensual') return s + m / 4;
+    if (g.frecuencia === 'diario') return s + m * 7;
+    return s + m; // semanal
+  }, 0);
+
+  const cardStyle = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 16, marginBottom: 12 };
+  const inputStyle = { width: '100%', padding: '10px 12px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 6, color: '#fff', fontSize: 13, boxSizing: 'border-box' };
+  const labelStyle = { display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase' };
+
+  return (
+    <div>
+      <div style={cardStyle}>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
+          📌 Estos gastos afectan la <strong>utilidad del lab</strong> (no a la familia). Aquí van insumos como kleenex, café, agua, luz, papel, etc.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+          <div>
+            <label style={labelStyle}>% retención de ingresos (insumos chicos)</label>
+            <input type="number" min="0" max="100" value={cfg.retencionPct || 8} onChange={(e) => guardar({ ...cfg, retencionPct: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Reserva automática para imprevistos chicos</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={cardStyle}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>🏭 Gastos fijos del lab</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--mod-finanzas)' }}>Total semanal: ${totalSemanalMXN.toLocaleString('es-MX', { maximumFractionDigits: 0 })} MXN</div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 90px 110px 60px', gap: 8, marginBottom: 12 }}>
+          <input value={nuevoGasto.concepto} onChange={(e) => setNuevoGasto({ ...nuevoGasto, concepto: e.target.value })} placeholder="Ej: Renta lab, agua, luz, café..." style={inputStyle} />
+          <input type="number" value={nuevoGasto.monto} onChange={(e) => setNuevoGasto({ ...nuevoGasto, monto: e.target.value })} placeholder="Monto" style={inputStyle} />
+          <select value={nuevoGasto.moneda} onChange={(e) => setNuevoGasto({ ...nuevoGasto, moneda: e.target.value })} style={inputStyle}>
+            <option value="MXN">MXN</option><option value="USD">USD</option>
+          </select>
+          <select value={nuevoGasto.frecuencia} onChange={(e) => setNuevoGasto({ ...nuevoGasto, frecuencia: e.target.value })} style={inputStyle}>
+            <option value="semanal">Semanal</option>
+            <option value="mensual">Mensual</option>
+            <option value="diario">Diario</option>
+          </select>
+          <button onClick={agregar} style={{ padding: '10px', background: 'var(--mod-finanzas)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 700 }}>+</button>
+        </div>
+
+        {(cfg.gastos || []).length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>Sin gastos fijos registrados</div>
+        ) : (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {cfg.gastos.map(g => (
+              <div key={g.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', background: 'var(--bg-input)', borderRadius: 6 }}>
+                <div>
+                  <div style={{ fontSize: 13, color: 'var(--text-primary)' }}>{g.concepto}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{g.frecuencia}</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--mod-finanzas)' }}>${g.monto.toLocaleString('es-MX')} {g.moneda}</span>
+                  <button onClick={() => eliminar(g.id)} style={{ background: 'rgba(239,68,68,0.15)', color: '#EF4444', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 12 }}>🗑️</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+// TAB RESUMEN: Ingresos/egresos por moneda y método de pago
+// ------------------------------------------------------------
+function FinanzasResumenTab() {
+  useZeraSync();
+  const [vista, setVista] = React.useState('semana');
+  const [tc, setTc] = React.useState(parseFloat(localStorage.getItem('tipoCambioUSDMXN')) || 17.5);
+
   const periodo = React.useMemo(() => {
     const ahora = new Date();
     const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
     const dow = hoy.getDay();
-    const inicioSemana = new Date(hoy);
-    inicioSemana.setDate(hoy.getDate() - (dow === 0 ? 6 : dow - 1));
+    const inicioSemana = new Date(hoy); inicioSemana.setDate(hoy.getDate() - (dow === 0 ? 6 : dow - 1));
     const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
-
     let inicio, label;
     if (vista === 'dia') { inicio = hoy; label = 'Hoy ' + hoy.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }); }
     else if (vista === 'semana') { inicio = inicioSemana; label = 'Semana del ' + inicioSemana.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }); }
@@ -4683,222 +5106,305 @@ function FinanzasModule({ currentUser }) {
     return { inicio, fin: ahora, label };
   }, [vista]);
 
-  // Calcular ingresos y egresos REALES desde Supabase/localStorage
-  const datosFinancieros = React.useMemo(() => {
-    const cobros = JSON.parse(localStorage.getItem('cobrosRegistro') || '[]');
-    const comisiones = JSON.parse(localStorage.getItem('comisionesGeneradas') || '[]');
-    const costos = JSON.parse(localStorage.getItem('costosOrdenes') || '[]');
-    const escaneos = JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
-    const tc = parseFloat(localStorage.getItem('tipoCambioUSDMXN')) || 17.5;
+  const toMXN = (monto, moneda) => moneda === 'USD' ? monto * tc : monto;
+  const inPeriodo = (iso) => {
+    if (!iso) return false;
+    try { const f = new Date(iso); return f >= periodo.inicio && f <= periodo.fin; } catch { return false; }
+  };
 
-    const inPeriodo = (fechaISO) => {
-      if (!fechaISO) return false;
-      try {
-        const f = new Date(fechaISO);
-        return f >= periodo.inicio && f <= periodo.fin;
-      } catch { return false; }
-    };
+  // INGRESOS por método de pago y moneda
+  const cobros = JSON.parse(localStorage.getItem('cobrosRegistro') || '[]');
+  const ingresosCobrados = cobros.filter(c => c.estado === 'cobrado' && inPeriodo(c.fechaCobroISO || c.fechaCobro));
+  const pendientes = cobros.filter(c => c.estado !== 'cobrado');
 
-    const toMXN = (monto, moneda) => moneda === 'USD' ? monto * tc : monto;
+  const ingresosPorMetodoYMoneda = React.useMemo(() => {
+    const tabla = { efectivo: { MXN: 0, USD: 0 }, tarjeta: { MXN: 0, USD: 0 }, transferencia: { MXN: 0, USD: 0 }, cheque: { MXN: 0, USD: 0 } };
+    ingresosCobrados.forEach(c => {
+      const m = c.metodo || 'efectivo';
+      const moneda = c.moneda || 'MXN';
+      const monto = (c.montoFinal ?? c.monto) || 0;
+      if (!tabla[m]) tabla[m] = { MXN: 0, USD: 0 };
+      tabla[m][moneda] = (tabla[m][moneda] || 0) + monto;
+    });
+    return tabla;
+  }, [ingresosCobrados]);
 
-    // INGRESOS = cobros con estado "cobrado" en el periodo
-    const ingresos = cobros.filter(c => c.estado === 'cobrado' && inPeriodo(c.fechaCobroISO || c.fechaCobro))
-                            .reduce((s, c) => s + toMXN((c.montoFinal ?? c.monto) || 0, c.moneda), 0);
+  // EGRESOS
+  const comisiones = JSON.parse(localStorage.getItem('comisionesGeneradas') || '[]');
+  const escaneos = JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
+  const costos = JSON.parse(localStorage.getItem('costosOrdenes') || '[]');
 
-    // EGRESOS = comisiones del periodo + gastos de escaneo
-    const egresoComisiones = comisiones.filter(c => inPeriodo(c.fechaISO || c.fecha))
-                                       .reduce((s, c) => s + (c.montoTotalMXN || 0), 0);
-    const egresoEscaneos = escaneos.filter(e => inPeriodo(e.fechaISO || e.fecha))
-                                   .reduce((s, e) => s + (e.costoTotal || 0), 0);
-    const egresoCostos = costos.filter(c => inPeriodo(c.fechaISO || c.fecha))
-                               .reduce((s, c) => s + (c.costoTotal || 0), 0);
-    const egresos = egresoComisiones + egresoEscaneos + egresoCostos;
+  const egresoComisiones = comisiones.filter(c => inPeriodo(c.fechaISO || c.fecha)).reduce((s, c) => s + (c.montoTotalMXN || toMXN(c.montoTotal || 0, c.moneda)), 0);
+  const egresoEscaneos = escaneos.filter(e => inPeriodo(e.fechaISO || e.fecha)).reduce((s, e) => s + toMXN(e.costoTotal || 0, e.moneda), 0);
+  const egresoCostos = costos.filter(c => inPeriodo(c.fechaISO || c.fecha)).reduce((s, c) => s + (c.costoTotal || 0), 0);
 
-    return {
-      ingresos, egresos,
-      desglose: [
-        { cat: 'Comisiones', monto: egresoComisiones },
-        { cat: 'Escaneos', monto: egresoEscaneos },
-        { cat: 'Costos de órdenes', monto: egresoCostos }
-      ].filter(d => d.monto > 0)
-    };
-  }, [periodo]);
+  // Salarios base semanal (proporcional al periodo)
+  const salarios = JSON.parse(localStorage.getItem('salariosBase') || '{}');
+  const totalSalariosSemanal = Object.values(salarios).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+  const egresoSalarios = vista === 'semana' ? totalSalariosSemanal : (vista === 'dia' ? totalSalariosSemanal / 6 : totalSalariosSemanal * 4);
 
-  const p = { label: periodo.label, ingresos: datosFinancieros.ingresos, egresos: datosFinancieros.egresos };
-  const utilidad = p.ingresos - p.egresos;
-  const distFamiliar = 0; // Configurable después
-  const saldoLab = utilidad - distFamiliar;
+  // INGRESOS TOTALES MXN
+  const totalIngresosMXN = Object.values(ingresosPorMetodoYMoneda).reduce((s, m) => s + m.MXN + m.USD * tc, 0);
+  // EGRESOS TOTALES MXN
+  const totalEgresosMXN = egresoComisiones + egresoEscaneos + egresoCostos + egresoSalarios;
+  const utilidadBruta = totalIngresosMXN - totalEgresosMXN;
 
-  const totalEgresos = Math.max(p.egresos, 1);
-  const gastos = datosFinancieros.desglose.map(g => ({ cat: g.cat, pct: (g.monto / totalEgresos * 100).toFixed(1) }));
+  // Gastos del lab (insumos fijos: agua, luz, café, etc.)
+  const gastosLabCfg = JSON.parse(localStorage.getItem('gastosFijosLab') || '{"retencionPct":8,"gastos":[]}');
+  const totalGastosLabSemanal = (gastosLabCfg.gastos || []).reduce((s, g) => {
+    const m = g.moneda === 'USD' ? g.monto * tc : g.monto;
+    if (g.frecuencia === 'mensual') return s + m / 4;
+    if (g.frecuencia === 'diario') return s + m * 7;
+    return s + m;
+  }, 0);
+  // Proporción según vista
+  const gastosLabPeriodo = vista === 'semana' ? totalGastosLabSemanal : (vista === 'dia' ? totalGastosLabSemanal / 7 : totalGastosLabSemanal * 4);
+  const retencionInsumos = (totalIngresosMXN * (gastosLabCfg.retencionPct || 8)) / 100;
+
+  // Total egresos incluye gastos fijos del lab
+  const totalEgresosConLab = totalEgresosMXN + gastosLabPeriodo + retencionInsumos;
+  const utilidadFinal = totalIngresosMXN - totalEgresosConLab;
+
+  // Distribución familiar SOLO desde la utilidad del lab
+  const familiar = JSON.parse(localStorage.getItem('configFamiliar') || '{"pctHogar":50,"gastos":[]}');
+  const distribucionHogar = Math.max(0, (utilidadFinal * (familiar.pctHogar || 50)) / 100);
+  const saldoLab = utilidadFinal - distribucionHogar;
+  const totalGastosFamiliares = (familiar.gastos || []).reduce((s, g) => {
+    const m = g.moneda === 'USD' ? g.monto * tc : g.monto;
+    return s + m;
+  }, 0);
+
+  const cardStyle = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 16, marginBottom: 12 };
+  const inputBoxStyle = { padding: '8px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 6, color: '#fff', fontSize: 13 };
 
   return (
-    <div style={{ animation:'fadeIn 0.3s' }}>
-      {!canEdit && <InfoCard icon="👁️" title="Acceso de consulta" description="Puedes ver esta información pero no puedes hacer cambios. Solo Itzel puede editar finanzas." color="var(--mod-finanzas)" />}
-      <SectionHeader title="Finanzas" subtitle={p.label} color="var(--mod-finanzas)" icon="📊">
-        <div style={{ display:'flex', gap:4, background:'var(--bg-card)', borderRadius:'var(--radius-md)', padding:4 }}>
-          {['dia','semana','mes'].map(v => (
-            <button key={v} onClick={()=>setVista(v)} style={{ padding:'10px 18px', borderRadius:'var(--radius-sm)', background:vista===v?'var(--mod-finanzas)':'transparent', border:'none', color:vista===v?'#fff':'var(--text-muted)', cursor:'pointer', fontSize:14, fontWeight:vista===v?700:400, transition:'all 0.15s' }}>{v==='dia'?'Día':v==='semana'?'Semana':'Mes'}</button>
+    <div>
+      {/* Selector periodo */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 4, background: 'var(--bg-card)', borderRadius: 'var(--radius-md)', padding: 4 }}>
+          {['dia', 'semana', 'mes'].map(v => (
+            <button key={v} onClick={() => setVista(v)} style={{ padding: '8px 16px', borderRadius: 'var(--radius-sm)', background: vista === v ? 'var(--mod-finanzas)' : 'transparent', border: 'none', color: vista === v ? '#fff' : 'var(--text-muted)', cursor: 'pointer', fontSize: 13, fontWeight: vista === v ? 700 : 500 }}>
+              {v === 'dia' ? 'Día' : v === 'semana' ? 'Semana' : 'Mes'}
+            </button>
           ))}
         </div>
-      </SectionHeader>
-
-      <div style={{ background:'var(--bg-card)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-lg)', padding:28, marginBottom:20 }}>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr auto 1fr auto 1fr', gap:16, alignItems:'center', textAlign:'center' }}>
-          <div><div style={{ fontSize:14, color:'var(--text-muted)', marginBottom:6 }}>Ingresos</div><div style={{ fontSize:32, fontWeight:900, color:'var(--success)' }}>${p.ingresos.toLocaleString()}</div></div>
-          <span style={{ fontSize:28, color:'var(--text-muted)' }}>−</span>
-          <div><div style={{ fontSize:14, color:'var(--text-muted)', marginBottom:6 }}>Egresos</div><div style={{ fontSize:32, fontWeight:900, color:'var(--danger)' }}>${p.egresos.toLocaleString()}</div></div>
-          <span style={{ fontSize:28, color:'var(--text-muted)' }}>=</span>
-          <div><div style={{ fontSize:14, color:'var(--text-muted)', marginBottom:6 }}>Utilidad</div><div style={{ fontSize:32, fontWeight:900, color:'var(--mod-finanzas)' }}>${utilidad.toLocaleString()}</div></div>
+        <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>{periodo.label}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>1 USD =</span>
+          <input type="number" step="0.1" value={tc} onChange={(e) => { const n = parseFloat(e.target.value) || 0; setTc(n); localStorage.setItem('tipoCambioUSDMXN', String(n)); }} style={{ ...inputBoxStyle, width: 70, fontWeight: 700 }} />
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>MXN</span>
         </div>
-        {distFamiliar > 0 && (
-          <div style={{ borderTop:'1px solid var(--border-subtle)', marginTop:20, paddingTop:16, display:'grid', gridTemplateColumns:'1fr auto 1fr', gap:16, alignItems:'center', textAlign:'center' }}>
-            <div><div style={{ fontSize:13, color:'var(--text-muted)' }}>Distribución familiar</div><div style={{ fontSize:22, fontWeight:800, color:'var(--warning)' }}>−${distFamiliar.toLocaleString()}</div></div>
-            <span style={{ fontSize:20, color:'var(--text-muted)' }}>=</span>
-            <div><div style={{ fontSize:13, color:'var(--text-muted)' }}>Saldo en lab</div><div style={{ fontSize:22, fontWeight:800, color:'var(--success)' }}>${saldoLab.toLocaleString()}</div></div>
+      </div>
+
+      {/* Resumen Big Numbers */}
+      <div style={cardStyle}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 16, textAlign: 'center', alignItems: 'center' }}>
+          <div><div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Ingresos</div><div style={{ fontSize: 26, fontWeight: 900, color: 'var(--success)' }}>${totalIngresosMXN.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div></div>
+          <div><div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Egresos</div><div style={{ fontSize: 26, fontWeight: 900, color: 'var(--danger)' }}>${totalEgresosConLab.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div></div>
+          <div><div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Utilidad lab</div><div style={{ fontSize: 26, fontWeight: 900, color: utilidadFinal >= 0 ? 'var(--mod-finanzas)' : 'var(--danger)' }}>${utilidadFinal.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div></div>
+          <div><div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Saldo lab</div><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--success)' }}>${saldoLab.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div></div>
+        </div>
+      </div>
+
+      {/* Tabla cruzada ingresos por método y moneda */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>💵 Ingresos cobrados por método y moneda</div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-input)' }}>
+                <th style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>Método</th>
+                <th style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>MXN</th>
+                <th style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>USD</th>
+                <th style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>Total (MXN)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { id: 'efectivo', label: '💵 Efectivo' },
+                { id: 'transferencia', label: '🏦 Transferencia' },
+                { id: 'tarjeta', label: '💳 Tarjeta' },
+                { id: 'cheque', label: '📃 Cheque' }
+              ].map(m => {
+                const r = ingresosPorMetodoYMoneda[m.id] || { MXN: 0, USD: 0 };
+                const total = r.MXN + r.USD * tc;
+                return (
+                  <tr key={m.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '10px', fontWeight: 600, color: 'var(--text-primary)' }}>{m.label}</td>
+                    <td style={{ padding: '10px', textAlign: 'right', color: 'var(--text-secondary)' }}>${r.MXN.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</td>
+                    <td style={{ padding: '10px', textAlign: 'right', color: 'var(--text-secondary)' }}>${r.USD.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</td>
+                    <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, color: 'var(--success)' }}>${total.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</td>
+                  </tr>
+                );
+              })}
+              <tr style={{ borderTop: '2px solid var(--border-subtle)', background: 'var(--bg-input)' }}>
+                <td style={{ padding: '10px', fontWeight: 800, color: 'var(--text-primary)' }}>TOTAL</td>
+                <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, color: 'var(--text-primary)' }}>${Object.values(ingresosPorMetodoYMoneda).reduce((s, m) => s + m.MXN, 0).toLocaleString('es-MX')}</td>
+                <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, color: 'var(--text-primary)' }}>${Object.values(ingresosPorMetodoYMoneda).reduce((s, m) => s + m.USD, 0).toLocaleString('es-MX')}</td>
+                <td style={{ padding: '10px', textAlign: 'right', fontWeight: 900, color: 'var(--success)' }}>${totalIngresosMXN.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        {pendientes.length > 0 && <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 8 }}>⚠ Hay {pendientes.length} cobro{pendientes.length !== 1 ? 's' : ''} pendiente{pendientes.length !== 1 ? 's' : ''} (no contado{pendientes.length !== 1 ? 's' : ''} arriba)</div>}
+      </div>
+
+      {/* Desglose de egresos */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>📉 Desglose de egresos (en MXN)</div>
+        {[
+          { label: '👥 Salarios base', monto: egresoSalarios },
+          { label: '💰 Comisiones (Fidel)', monto: egresoComisiones },
+          { label: '🔍 Escaneos (Abril/Juan)', monto: egresoEscaneos },
+          { label: '🔬 Lab externo / materiales', monto: egresoCostos },
+          { label: '🏭 Gastos fijos del lab', monto: gastosLabPeriodo },
+          { label: `💵 Retención insumos (${gastosLabCfg.retencionPct || 8}%)`, monto: retencionInsumos }
+        ].filter(g => g.monto > 0).map((g, i) => {
+          const pct = totalEgresosConLab > 0 ? (g.monto / totalEgresosConLab * 100) : 0;
+          return (
+            <div key={i} style={{ marginBottom: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 13 }}>
+                <span style={{ fontWeight: 500 }}>{g.label}</span>
+                <span style={{ fontWeight: 700 }}>${g.monto.toLocaleString('es-MX', { maximumFractionDigits: 0 })} ({pct.toFixed(1)}%)</span>
+              </div>
+              <div style={{ height: 6, background: 'var(--bg-input)', borderRadius: 3 }}>
+                <div style={{ height: 6, background: 'var(--mod-finanzas)', borderRadius: 3, width: `${pct}%`, transition: 'width 0.3s' }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Autodivisión */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>📊 Distribución de utilidad</div>
+        <div style={{ display: 'grid', gap: 8, fontSize: 13 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(52,211,153,0.08)', borderRadius: 6 }}>
+            <span>💰 Ingresos brutos</span><span style={{ fontWeight: 700, color: 'var(--success)' }}>${totalIngresosMXN.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(239,68,68,0.08)', borderRadius: 6 }}>
+            <span>− Nómina + comisiones + materiales</span><span style={{ fontWeight: 700, color: 'var(--danger)' }}>−${(egresoSalarios + egresoComisiones + egresoEscaneos + egresoCostos).toLocaleString('es-MX', { maximumFractionDigits: 0 })}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(245,158,11,0.08)', borderRadius: 6 }}>
+            <span>− Gastos fijos del lab (agua/luz/insumos)</span><span style={{ fontWeight: 700, color: 'var(--warning)' }}>−${gastosLabPeriodo.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(245,158,11,0.08)', borderRadius: 6 }}>
+            <span>− Retención insumos ({gastosLabCfg.retencionPct || 8}%)</span><span style={{ fontWeight: 700, color: 'var(--warning)' }}>−${retencionInsumos.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(91,141,239,0.08)', borderRadius: 6 }}>
+            <span>− Distribución familiar ({familiar.pctHogar || 50}% de utilidad lab)</span><span style={{ fontWeight: 700, color: 'var(--accent-blue)' }}>−${distribucionHogar.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px', background: 'var(--bg-input)', borderRadius: 6, fontSize: 16, fontWeight: 800, marginTop: 4 }}>
+            <span>= Saldo en lab</span><span style={{ color: saldoLab >= 0 ? 'var(--success)' : 'var(--danger)' }}>${saldoLab.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</span>
+          </div>
+        </div>
+        {totalGastosFamiliares > 0 && (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border-subtle)' }}>
+            📌 Gastos familiares registrados esta semana: ${totalGastosFamiliares.toLocaleString('es-MX')} (configurables en tab Familiar)
           </div>
         )}
       </div>
+    </div>
+  );
+}
 
-      <SubSection title="Desglose de egresos" color="var(--mod-finanzas)">
-        {gastos.map((g,i) => (
-          <div key={i} style={{ marginBottom:12 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-              <span style={{ fontSize:14, fontWeight:500 }}>{g.cat}</span>
-              <span style={{ fontSize:14, fontWeight:700 }}>${Math.round(p.egresos*g.pct/100).toLocaleString()} ({g.pct}%)</span>
-            </div>
-            <div style={{ height:8, background:'var(--bg-primary)', borderRadius:4 }}>
-              <div style={{ height:8, background:'var(--mod-finanzas)', borderRadius:4, width:`${g.pct}%`, transition:'width 0.5s' }} />
-            </div>
-          </div>
-        ))}
-      </SubSection>
+// ------------------------------------------------------------
+// TAB DISTRIBUCIÓN FAMILIAR
+// ------------------------------------------------------------
+function DistribucionFamiliarTab() {
+  useZeraSync();
+  const [cfg, setCfg] = React.useState(() => {
+    const saved = localStorage.getItem('configFamiliar');
+    return saved ? JSON.parse(saved) : { pctHogar: 50, retencionPct: 8, gastos: [] };
+  });
+  const [nuevoGasto, setNuevoGasto] = React.useState({ concepto: '', monto: '', moneda: 'MXN' });
 
-      {/* TRACKING DE COSTOS DE ÓRDENES EN PRODUCCIÓN */}
-      {(() => {
-        const ordenes = JSON.parse(localStorage.getItem('produccionOrdenes') || '[]');
-        const costosOrdenes = JSON.parse(localStorage.getItem('costosOrdenes') || '[]');
+  const guardar = (nuevo) => {
+    setCfg(nuevo);
+    localStorage.setItem('configFamiliar', JSON.stringify(nuevo));
+  };
 
-        // Filtrar costos por período
-        const ahora = new Date();
-        const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
-        const inicioSemana = new Date(hoy);
-        inicioSemana.setDate(hoy.getDate() - hoy.getDay() + 1); // Lunes
-        const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
+  const agregar = () => {
+    if (!nuevoGasto.concepto.trim() || !nuevoGasto.monto) {
+      alert('Concepto y monto son obligatorios');
+      return;
+    }
+    guardar({
+      ...cfg,
+      gastos: [...(cfg.gastos || []), {
+        id: Date.now(),
+        concepto: nuevoGasto.concepto.trim(),
+        monto: parseFloat(nuevoGasto.monto) || 0,
+        moneda: nuevoGasto.moneda,
+        fecha: new Date().toISOString()
+      }]
+    });
+    setNuevoGasto({ concepto: '', monto: '', moneda: 'MXN' });
+  };
 
-        const costosFiltrados = costosOrdenes.filter(costo => {
-          const fechaCosto = new Date(costo.fecha.split(' ')[0].split('-')[2],
-                                      parseInt(costo.fecha.split(' ')[0].split('-')[1]) - 1,
-                                      costo.fecha.split(' ')[0].split('-')[0]);
-          if (vista === 'dia') return fechaCosto >= hoy;
-          if (vista === 'semana') return fechaCosto >= inicioSemana;
-          if (vista === 'mes') return fechaCosto >= inicioMes;
-          return true;
-        });
+  const eliminar = (id) => {
+    guardar({ ...cfg, gastos: cfg.gastos.filter(g => g.id !== id) });
+  };
 
-        const totalCostos = costosFiltrados.reduce((sum, c) => sum + c.costoTotal, 0);
-        const costosPorDoctor = {};
-        const costosPorTrabajo = {};
+  const totalMXN = (cfg.gastos || []).reduce((s, g) => {
+    const tc = parseFloat(localStorage.getItem('tipoCambioUSDMXN')) || 17.5;
+    return s + (g.moneda === 'USD' ? g.monto * tc : g.monto);
+  }, 0);
 
-        costosFiltrados.forEach(costo => {
-          const orden = ordenes.find(o => o.id === costo.orderId);
-          if (orden) {
-            costosPorDoctor[orden.doctor] = (costosPorDoctor[orden.doctor] || 0) + costo.costoTotal;
-            costosPorTrabajo[costo.trabajo] = (costosPorTrabajo[costo.trabajo] || 0) + costo.costoTotal;
-          }
-        });
+  const cardStyle = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 16, marginBottom: 12 };
+  const inputStyle = { width: '100%', padding: '10px 12px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 6, color: '#fff', fontSize: 13, boxSizing: 'border-box' };
+  const labelStyle = { display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase' };
 
-        return costosFiltrados.length > 0 ? (
+  return (
+    <div>
+      {/* Reglas */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>⚙️ Distribución al hogar</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
-            <SubSection title="💰 Tracking de Costos de Órdenes" color="var(--mod-finanzas)" description={`Total de costos en producción: $${totalCostos.toLocaleString()}`}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
-                {/* Costos por Doctor */}
-                <div>
-                  <h4 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>👨‍⚕️ Costos por Doctor</h4>
-                  {Object.entries(costosPorDoctor).map(([doctor, costo]) => (
-                    <div key={doctor} style={{ display: 'flex', justifyContent: 'space-between', padding: 10, background: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', marginBottom: 8, fontSize: 13 }}>
-                      <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{doctor}</span>
-                      <span style={{ fontWeight: 700, color: 'var(--mod-finanzas)' }}>${costo.toLocaleString('es-MX')}</span>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Costos por Tipo de Trabajo */}
-                <div>
-                  <h4 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>🦷 Costos por Tipo de Prótesis</h4>
-                  {Object.entries(costosPorTrabajo).map(([trabajo, costo]) => (
-                    <div key={trabajo} style={{ display: 'flex', justifyContent: 'space-between', padding: 10, background: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', marginBottom: 8, fontSize: 13 }}>
-                      <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{trabajo}</span>
-                      <span style={{ fontWeight: 700, color: 'var(--mod-finanzas)' }}>${costo.toLocaleString('es-MX')}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Listado de órdenes con costos */}
-              <h4 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>📋 Órdenes Activas</h4>
-              <div style={{ display: 'grid', gridTemplateColumns: '0.8fr 1fr 1.2fr 0.8fr 0.8fr', gap: 12, marginBottom: 12, fontSize: 11, fontWeight: 700, color: 'var(--text-muted)' }}>
-                <div>Folio</div><div>Doctor</div><div>Trabajo</div><div>Unidades</div><div>Costo</div>
-              </div>
-              {ordenes.map((orden) => {
-                const costo = costosFiltrados.find(c => c.orderId === orden.id);
-                return costo ? (
-                  <div key={orden.id} style={{ display: 'grid', gridTemplateColumns: '0.8fr 1fr 1.2fr 0.8fr 0.8fr', gap: 12, alignItems: 'center', padding: 12, background: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', marginBottom: 8, borderLeft: `3px solid var(--mod-finanzas)`, fontSize: 12 }}>
-                    <span style={{ fontWeight: 600 }}>{orden.folio}</span>
-                    <span style={{ color: 'var(--text-secondary)' }}>{orden.doctor.split(' ')[0]}</span>
-                    <span style={{ color: 'var(--text-secondary)' }}>{costo.trabajo}</span>
-                    <span style={{ textAlign: 'center', fontWeight: 600 }}>{costo.unidades}</span>
-                    <span style={{ textAlign: 'center', fontWeight: 700, color: 'var(--mod-finanzas)' }}>${costo.costoTotal.toLocaleString('es-MX')}</span>
-                  </div>
-                ) : null;
-              })}
-
-              <div style={{ padding: 12, background: 'rgba(201,169,110,0.1)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(201,169,110,0.2)', display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
-                <span style={{ fontWeight: 700 }}>💰 Total de Costos de Órdenes:</span>
-                <span style={{ fontSize: 18, fontWeight: 900, color: 'var(--metallic-gold)' }}>${totalCostos.toLocaleString('es-MX')}</span>
-              </div>
-            </SubSection>
+            <label style={labelStyle}>% de utilidad del lab al hogar</label>
+            <input type="number" min="0" max="100" value={cfg.pctHogar || 50} onChange={(e) => guardar({ ...cfg, pctHogar: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Se descuenta de la utilidad final del lab</div>
           </div>
-        ) : null;
-      })()}
+        </div>
+        <div style={{ marginTop: 10, padding: 8, background: 'rgba(91,141,239,0.08)', borderRadius: 6, fontSize: 11, color: 'var(--text-secondary)' }}>
+          💡 Los gastos del lab (insumos, agua, luz, etc.) se manejan en el tab <strong>🏭 Gastos Lab</strong> aparte.
+        </div>
+      </div>
 
-      {/* GASTOS POR ESCANEO - JUAN/ABRIL */}
-      {(() => {
-        const gastosEscaneo = JSON.parse(localStorage.getItem('gastosEscaneo') || '[]');
+      {/* Gastos familiares específicos */}
+      <div style={cardStyle}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>🏠 Gastos familiares fijos</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent-blue)' }}>Total: ${totalMXN.toLocaleString('es-MX', { maximumFractionDigits: 0 })} MXN</div>
+        </div>
 
-        // Filtrar gastos de escaneo por período
-        const gastosEscaneoFiltrados = gastosEscaneo.filter(gasto => {
-          const fechaGasto = new Date(gasto.fecha.split(' ')[0].split('-')[2],
-                                       parseInt(gasto.fecha.split(' ')[0].split('-')[1]) - 1,
-                                       gasto.fecha.split(' ')[0].split('-')[0]);
-          if (vista === 'dia') return fechaGasto >= hoy;
-          if (vista === 'semana') return fechaGasto >= inicioSemana;
-          if (vista === 'mes') return fechaGasto >= inicioMes;
-          return true;
-        });
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 100px 80px', gap: 8, marginBottom: 12 }}>
+          <input value={nuevoGasto.concepto} onChange={(e) => setNuevoGasto({ ...nuevoGasto, concepto: e.target.value })} placeholder="Ej: Renta, despensa, gas..." style={inputStyle} />
+          <input type="number" value={nuevoGasto.monto} onChange={(e) => setNuevoGasto({ ...nuevoGasto, monto: e.target.value })} placeholder="Monto" style={inputStyle} />
+          <select value={nuevoGasto.moneda} onChange={(e) => setNuevoGasto({ ...nuevoGasto, moneda: e.target.value })} style={inputStyle}>
+            <option value="MXN">MXN</option>
+            <option value="USD">USD</option>
+          </select>
+          <button onClick={agregar} style={{ padding: '10px', background: 'var(--mod-finanzas)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>+</button>
+        </div>
 
-        const totalEscaneo = gastosEscaneoFiltrados.reduce((sum, g) => sum + g.costoTotal, 0);
-        return gastosEscaneoFiltrados.length > 0 ? (
-          <SubSection title="💳 Gastos por Escaneo (Juan/Abril)" color="var(--mod-finanzas)" description={`Total acumulado: $${totalEscaneo.toLocaleString()}`}>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr', gap:12, marginBottom:12, fontSize:12, fontWeight:700, color:'var(--text-muted)' }}>
-              <div>Doctor</div><div>Trabajo</div><div>Unidades</div><div>Costo/ud</div><div>Total</div>
-            </div>
-            {gastosEscaneoFiltrados.map((g, i) => (
-              <div key={i} style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr', gap:12, alignItems:'center', padding:12, background:'var(--bg-primary)', borderRadius:'var(--radius-md)', marginBottom:8, borderLeft:'3px solid var(--info)' }}>
-                <span style={{ fontSize:13, fontWeight:600 }}>{g.doctor}</span>
-                <span style={{ fontSize:13, color:'var(--text-secondary)' }}>{g.trabajo}</span>
-                <span style={{ textAlign:'center', fontWeight:600 }}>{g.unidades}</span>
-                <span style={{ textAlign:'center', color:'var(--danger)', fontWeight:700 }}>-${g.costoUnidad}</span>
-                <span style={{ textAlign:'center', fontWeight:700, color:'var(--danger)' }}>-${g.costoTotal.toLocaleString()}</span>
+        {(cfg.gastos || []).length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>Sin gastos familiares registrados</div>
+        ) : (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {cfg.gastos.map(g => (
+              <div key={g.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', background: 'var(--bg-input)', borderRadius: 6 }}>
+                <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>{g.concepto}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent-blue)' }}>${g.monto.toLocaleString('es-MX')} {g.moneda}</span>
+                  <button onClick={() => eliminar(g.id)} style={{ background: 'rgba(239,68,68,0.15)', color: '#EF4444', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 12 }}>🗑️</button>
+                </div>
               </div>
             ))}
-            <div style={{ padding:12, background:'rgba(14,165,233,0.1)', borderRadius:'var(--radius-md)', border:'1px solid rgba(14,165,233,0.2)', display:'flex', justifyContent:'space-between' }}>
-              <span style={{ fontWeight:700 }}>Total a descontar:</span>
-              <span style={{ fontSize:18, fontWeight:900, color:'var(--info)' }}>-${totalEscaneo.toLocaleString()}</span>
-            </div>
-          </SubSection>
-        ) : null;
-      })()}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -5212,6 +5718,298 @@ const NOMINA_DATA = [
 // Lee: comisionesGeneradas, salariosBase, reglasComisiones,
 //      produccionOrdenes (para reporte por técnico)
 // ============================================================
+
+// ============================================================
+// MÓDULO CONTADURÍA (Montserrat)
+// Lista de cobros que requieren factura. Conectado a Cobros/Notas.
+// ============================================================
+function ContaduriaModule({ onNavigate }) {
+  useZeraSync('contaduria');
+  const [items, setItems] = React.useState(() => JSON.parse(localStorage.getItem('contaduria') || '[]'));
+  const [filtro, setFiltro] = React.useState('pendiente');
+  const [busqueda, setBusqueda] = React.useState('');
+  const [editando, setEditando] = React.useState(null);
+  const [form, setForm] = React.useState({ numeroFactura: '', notas: '' });
+
+  React.useEffect(() => {
+    const handler = () => setItems(JSON.parse(localStorage.getItem('contaduria') || '[]'));
+    window.addEventListener('zera-sync', handler);
+    return () => window.removeEventListener('zera-sync', handler);
+  }, []);
+
+  const guardar = (nuevos) => {
+    setItems(nuevos);
+    localStorage.setItem('contaduria', JSON.stringify(nuevos));
+  };
+
+  const marcarFacturado = (id) => {
+    const item = items.find(i => i.id === id);
+    if (!item) return;
+    setEditando(id);
+    setForm({ numeroFactura: item.numeroFactura || '', notas: item.notas || '' });
+  };
+
+  const confirmarFacturado = () => {
+    if (!form.numeroFactura.trim()) { alert('Captura el número de factura'); return; }
+    const ahora = new Date();
+    guardar(items.map(i => i.id === editando ? {
+      ...i,
+      estado: 'facturado',
+      numeroFactura: form.numeroFactura.trim(),
+      notas: form.notas.trim(),
+      fechaFactura: ahora.toLocaleString('es-MX'),
+      fechaFacturaISO: ahora.toISOString()
+    } : i));
+    setEditando(null);
+    setForm({ numeroFactura: '', notas: '' });
+  };
+
+  const revertir = (id) => {
+    if (!confirm('¿Volver a marcar como pendiente?')) return;
+    guardar(items.map(i => i.id === id ? { ...i, estado: 'pendiente', numeroFactura: null, fechaFactura: null, fechaFacturaISO: null } : i));
+  };
+
+  const eliminar = (id) => {
+    if (!confirm('¿Eliminar esta solicitud?')) return;
+    guardar(items.filter(i => i.id !== id));
+  };
+
+  const filtrados = items.filter(i => {
+    if (filtro !== 'todos' && i.estado !== filtro) return false;
+    if (busqueda.trim()) {
+      const q = busqueda.toLowerCase();
+      return [i.folio, i.doctor, i.paciente, i.folioNota].some(v => (v || '').toLowerCase().includes(q));
+    }
+    return true;
+  }).sort((a, b) => new Date(b.fechaSolicitudISO || 0) - new Date(a.fechaSolicitudISO || 0));
+
+  const pendientes = items.filter(i => i.estado === 'pendiente').length;
+  const facturados = items.filter(i => i.estado === 'facturado').length;
+
+  const cardStyle = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 16, marginBottom: 12 };
+  const inputStyle = { width: '100%', padding: '10px 12px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 6, color: '#fff', fontSize: 13, boxSizing: 'border-box' };
+  const labelStyle = { display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase' };
+
+  return (
+    <div style={{ animation: 'fadeIn 0.3s' }}>
+      <SectionHeader title="Contaduría" subtitle="Facturación — solicitudes y facturas emitidas" color="var(--mod-finanzas)" icon="📄" />
+
+      {/* KPIs */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Pendientes de factura</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--warning)' }}>{pendientes}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Facturadas</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--success)' }}>{facturados}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Total solicitudes</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--accent-blue)' }}>{items.length}</div>
+        </div>
+      </div>
+
+      {/* Filtros */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+        <input type="text" placeholder="🔍 Buscar por folio, doctor, paciente, folio nota..." value={busqueda} onChange={(e) => setBusqueda(e.target.value)} style={{ ...inputStyle, flex: '1 1 240px', minWidth: 200 }} />
+        <select value={filtro} onChange={(e) => setFiltro(e.target.value)} style={{ ...inputStyle, width: 180, cursor: 'pointer' }}>
+          <option value="pendiente">⏳ Pendientes</option>
+          <option value="facturado">✅ Facturadas</option>
+          <option value="todos">📋 Todas</option>
+        </select>
+      </div>
+
+      {/* Lista */}
+      {filtrados.length === 0 ? (
+        <div style={{ ...cardStyle, textAlign: 'center', padding: 40 }}>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>📄</div>
+          <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>
+            {items.length === 0 ? 'Sin solicitudes. Cuando un trabajo se entregue con "Requiere factura", aparecerá aquí.' : 'Sin solicitudes que coincidan'}
+          </div>
+        </div>
+      ) : (
+        filtrados.map(it => (
+          <div key={it.id} style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--accent-blue)' }}>{it.folio}</span>
+                  {it.folioNota && <span style={{ fontSize: 12, padding: '2px 8px', background: 'var(--bg-input)', color: 'var(--text-secondary)', borderRadius: 12 }}>Nota {it.folioNota}</span>}
+                  {it.estado === 'pendiente'
+                    ? <span style={{ padding: '2px 8px', background: 'rgba(245,158,11,0.2)', color: 'var(--warning)', borderRadius: 12, fontSize: 11, fontWeight: 700 }}>⏳ Pendiente</span>
+                    : <span style={{ padding: '2px 8px', background: 'rgba(52,211,153,0.2)', color: 'var(--success)', borderRadius: 12, fontSize: 11, fontWeight: 700 }}>✅ Facturada</span>
+                  }
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{it.paciente}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{it.doctor} · {it.trabajo}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Solicitada: {it.fechaSolicitud}</div>
+                {it.estado === 'facturado' && (
+                  <div style={{ marginTop: 8, padding: '6px 10px', background: 'rgba(52,211,153,0.08)', borderRadius: 6 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Factura #{it.numeroFactura} · {it.fechaFactura}</div>
+                    {it.notas && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>📝 {it.notas}</div>}
+                  </div>
+                )}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+                {it.estado === 'pendiente' ? (
+                  <button onClick={() => marcarFacturado(it.id)} style={{ padding: '8px 14px', background: 'var(--success)', color: '#000', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>✅ Facturar</button>
+                ) : (
+                  <button onClick={() => revertir(it.id)} style={{ padding: '8px 14px', background: 'rgba(245,158,11,0.15)', color: 'var(--warning)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>↺ Revertir</button>
+                )}
+                <button onClick={() => eliminar(it.id)} style={{ padding: '6px 10px', background: 'rgba(239,68,68,0.15)', color: '#EF4444', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 14 }}>🗑️</button>
+              </div>
+            </div>
+          </div>
+        ))
+      )}
+
+      {/* MODAL: Marcar facturado */}
+      {editando && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', padding: 24, maxWidth: 480, width: '100%', border: '2px solid var(--success)' }}>
+            <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)', margin: 0, marginBottom: 16 }}>✅ Marcar como facturado</h2>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <div>
+                <label style={labelStyle}>Número de factura *</label>
+                <input value={form.numeroFactura} onChange={(e) => setForm({ ...form, numeroFactura: e.target.value })} placeholder="Ej: F-2026-001" style={inputStyle} />
+              </div>
+              <div>
+                <label style={labelStyle}>Notas (opcional)</label>
+                <textarea value={form.notas} onChange={(e) => setForm({ ...form, notas: e.target.value })} rows={2} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <button onClick={() => setEditando(null)} style={{ flex: 1, padding: '10px', background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', cursor: 'pointer' }}>Cancelar</button>
+              <button onClick={confirmarFacturado} style={{ flex: 2, padding: '10px', background: 'var(--success)', color: '#000', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontWeight: 700 }}>✅ Confirmar facturado</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// MÓDULO DOCTORES (admin interno del lab)
+// Base de datos de doctores para usar como dropdown en Registro
+// ============================================================
+function DoctoresAdminModule({ onNavigate }) {
+  useZeraSync('doctoresLab');
+  const [doctores, setDoctores] = React.useState(() => JSON.parse(localStorage.getItem('doctoresLab') || '[]'));
+  const [busqueda, setBusqueda] = React.useState('');
+  const [editando, setEditando] = React.useState(null);
+  const [form, setForm] = React.useState({ nombre: '', clinica: '', telefono: '', email: '', direccion: '', notas: '' });
+
+  React.useEffect(() => {
+    const handler = () => setDoctores(JSON.parse(localStorage.getItem('doctoresLab') || '[]'));
+    window.addEventListener('zera-sync', handler);
+    return () => window.removeEventListener('zera-sync', handler);
+  }, []);
+
+  const guardarDoctores = (nuevos) => {
+    setDoctores(nuevos);
+    localStorage.setItem('doctoresLab', JSON.stringify(nuevos));
+  };
+
+  const guardar = () => {
+    if (!form.nombre.trim()) { alert('El nombre es obligatorio'); return; }
+    if (editando) {
+      guardarDoctores(doctores.map(d => d.id === editando ? { ...d, ...form } : d));
+    } else {
+      const nuevo = { id: Date.now(), ...form, activo: true };
+      guardarDoctores([nuevo, ...doctores]);
+    }
+    setForm({ nombre: '', clinica: '', telefono: '', email: '', direccion: '', notas: '' });
+    setEditando(null);
+  };
+
+  const editar = (d) => {
+    setEditando(d.id);
+    setForm({ nombre: d.nombre || '', clinica: d.clinica || '', telefono: d.telefono || '', email: d.email || '', direccion: d.direccion || '', notas: d.notas || '' });
+  };
+
+  const eliminar = (id) => {
+    if (!confirm('¿Eliminar este doctor de la lista?')) return;
+    guardarDoctores(doctores.filter(d => d.id !== id));
+  };
+
+  const filtrados = doctores.filter(d => !busqueda || (d.nombre || '').toLowerCase().includes(busqueda.toLowerCase()) || (d.clinica || '').toLowerCase().includes(busqueda.toLowerCase()));
+
+  const cardStyle = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 16, marginBottom: 12 };
+  const inputStyle = { width: '100%', padding: '10px 12px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: '#fff', fontSize: 13, boxSizing: 'border-box' };
+  const labelStyle = { display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase' };
+
+  return (
+    <div style={{ animation: 'fadeIn 0.3s' }}>
+      <SectionHeader title="Doctores" subtitle={`${doctores.length} doctor${doctores.length !== 1 ? 'es' : ''} registrado${doctores.length !== 1 ? 's' : ''}`} color="var(--mod-doctores)" icon="👨‍⚕️" />
+
+      {/* Formulario */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 10 }}>
+          {editando ? '✏️ Editar doctor' : '➕ Agregar nuevo doctor'}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: 10 }}>
+          <div><label style={labelStyle}>Nombre *</label><input value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} placeholder="Dr. Pérez" style={inputStyle} /></div>
+          <div><label style={labelStyle}>Clínica</label><input value={form.clinica} onChange={(e) => setForm({ ...form, clinica: e.target.value })} placeholder="Clínica Dental..." style={inputStyle} /></div>
+          <div><label style={labelStyle}>Teléfono</label><input value={form.telefono} onChange={(e) => setForm({ ...form, telefono: e.target.value })} placeholder="664-..." style={inputStyle} /></div>
+          <div><label style={labelStyle}>Email</label><input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="dr@..." style={inputStyle} /></div>
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={labelStyle}>Dirección</label>
+          <input value={form.direccion} onChange={(e) => setForm({ ...form, direccion: e.target.value })} style={inputStyle} />
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={labelStyle}>Notas</label>
+          <textarea value={form.notas} onChange={(e) => setForm({ ...form, notas: e.target.value })} rows={2} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={guardar} style={{ flex: 1, padding: '10px 16px', background: 'var(--mod-doctores)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>
+            💾 {editando ? 'Guardar cambios' : 'Agregar doctor'}
+          </button>
+          {editando && (
+            <button onClick={() => { setEditando(null); setForm({ nombre: '', clinica: '', telefono: '', email: '', direccion: '', notas: '' }); }} style={{ padding: '10px 16px', background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13 }}>
+              Cancelar
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Búsqueda */}
+      <div style={{ marginBottom: 12 }}>
+        <input type="text" placeholder="🔍 Buscar doctor..." value={busqueda} onChange={(e) => setBusqueda(e.target.value)} style={{ ...inputStyle, width: '100%' }} />
+      </div>
+
+      {/* Lista */}
+      {filtrados.length === 0 ? (
+        <div style={{ ...cardStyle, textAlign: 'center', padding: 40 }}>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>👨‍⚕️</div>
+          <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>{doctores.length === 0 ? 'Aún no hay doctores. Agrega el primero arriba.' : 'Sin doctores que coincidan'}</div>
+        </div>
+      ) : (
+        filtrados.map(d => (
+          <div key={d.id} style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>{d.nombre}</div>
+                {d.clinica && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{d.clinica}</div>}
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  {d.telefono && <span>📞 {d.telefono}</span>}
+                  {d.email && <span>✉️ {d.email}</span>}
+                </div>
+                {d.notas && <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6, fontStyle: 'italic' }}>📝 {d.notas}</div>}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button onClick={() => editar(d)} style={{ padding: '6px 10px', background: 'rgba(91,141,239,0.15)', color: 'var(--accent-blue)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>✏️</button>
+                <button onClick={() => eliminar(d.id)} style={{ padding: '6px 10px', background: 'rgba(239,68,68,0.15)', color: '#EF4444', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>🗑️</button>
+              </div>
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
 
 // ============================================================
 // MÓDULO NOTAS POR DOCTOR — Vista de deuda agrupada por doctor
@@ -6265,7 +7063,21 @@ function ConfigModule({ onNavigate }) {
         <button onClick={guardarConfig} style={{ marginTop: 8, padding: '14px 28px', background: 'var(--mod-config)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 15, fontWeight: 700 }}>💾 Guardar cambios</button>
       </SubSection>
 
-      <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 14, letterSpacing: '0.5px', marginTop: 24 }}>ACCESOS RÁPIDOS</div>
+      {/* ZONA PELIGROSA: Reset */}
+      <div style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 'var(--radius-md)', padding: 16, marginTop: 24, marginBottom: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#EF4444', marginBottom: 8 }}>⚠️ Zona de mantenimiento</div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>Si ves datos viejos o desincronizados entre dispositivos, limpia el caché local de este dispositivo. Los datos en Supabase NO se borran — solo el caché de tu navegador. Después recarga la página y verás los datos actualizados de la nube.</div>
+        <button onClick={() => {
+          if (!confirm('¿Borrar el caché local de este dispositivo? Los datos en la nube se mantienen y se recargarán al recargar la página.')) return;
+          resetearLocalStorage();
+          alert('✅ Caché local borrado. La página se va a recargar para traer datos frescos de la nube.');
+          window.location.reload();
+        }} style={{ padding: '10px 18px', background: 'rgba(239,68,68,0.2)', color: '#EF4444', border: '1px solid #EF4444', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>
+          🗑️ Limpiar caché local de este dispositivo
+        </button>
+      </div>
+
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent-blue)', marginBottom: 14, letterSpacing: '1px', marginTop: 24, textTransform: 'uppercase', borderBottom: '1px solid rgba(91,141,239,0.2)', paddingBottom: 8 }}>Accesos rápidos</div>
       <div style={{ background: 'rgba(91,141,239,0.08)', border: '1px solid rgba(91,141,239,0.2)', borderRadius: 'var(--radius-md)', padding: 12, marginBottom: 14, fontSize: 12, color: 'var(--text-secondary)' }}>
         💡 Las opciones marcadas con flecha te llevan al módulo donde está la configuración real. Lo de "Próximamente" aún no está implementado.
       </div>
@@ -6487,7 +7299,7 @@ function Dashboard({ currentUser, onNavigate }) {
           </div>
         </div>
         <div>
-          <div style={{ fontSize:16, fontWeight:700, marginBottom:14 }}>Accesos rápidos</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent-blue)', marginBottom: 14, letterSpacing: '1px', textTransform: 'uppercase', borderBottom: '1px solid rgba(91,141,239,0.2)', paddingBottom: 8 }}>Accesos rápidos</div>
           <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
             {MODULES.filter(m => (ROLE_MODULES[currentUser.id]||[]).includes(m.id) && m.id !== 'dashboard').slice(0,4).map(m => (
               <button key={m.id} onClick={()=>onNavigate(m.id)} style={{
@@ -6597,6 +7409,55 @@ function Sidebar({ activeModule, onSelect, collapsed, onToggle, currentUser }) {
 // ============================================================
 // HEADER
 // ============================================================
+// Indicador de sincronización + errores
+function SyncIndicator({ status }) {
+  const [errores, setErrores] = React.useState([]);
+  const [verErrores, setVerErrores] = React.useState(false);
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      setErrores(prev => [...prev.slice(-9), { ...e.detail, time: Date.now() }]);
+    };
+    window.addEventListener('zera-sync-error', handler);
+    return () => window.removeEventListener('zera-sync-error', handler);
+  }, []);
+
+  const color = status === 'connected' ? '#34D399' : status === 'offline' ? '#EF4444' : '#F59E0B';
+  const fondo = status === 'connected' ? 'rgba(52,211,153,0.15)' : status === 'offline' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)';
+  const borde = status === 'connected' ? 'rgba(52,211,153,0.4)' : status === 'offline' ? 'rgba(239,68,68,0.4)' : 'rgba(245,158,11,0.4)';
+  const hayErrores = errores.length > 0;
+
+  return (
+    <>
+      <div onClick={() => hayErrores && setVerErrores(!verErrores)} style={{
+        position: 'fixed', bottom: 12, right: 12, padding: '6px 12px',
+        background: hayErrores ? 'rgba(239,68,68,0.25)' : fondo,
+        border: `1px solid ${hayErrores ? 'rgba(239,68,68,0.5)' : borde}`,
+        borderRadius: 20, fontSize: 11, fontWeight: 600,
+        color: hayErrores ? '#EF4444' : color,
+        display: 'flex', alignItems: 'center', gap: 6, zIndex: 100,
+        cursor: hayErrores ? 'pointer' : 'default'
+      }}>
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'currentColor', animation: status === 'connecting' ? 'pulse 1.5s infinite' : 'none' }} />
+        {hayErrores ? `⚠ ${errores.length} error${errores.length > 1 ? 'es' : ''} de sync` : (status === 'connected' ? 'En vivo' : status === 'offline' ? 'Sin conexión' : 'Conectando...')}
+      </div>
+      {verErrores && hayErrores && (
+        <div style={{ position: 'fixed', bottom: 50, right: 12, width: 360, maxHeight: 300, overflow: 'auto', background: 'var(--bg-card)', border: '1px solid #EF4444', borderRadius: 8, padding: 12, zIndex: 101, boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <strong style={{ color: '#EF4444', fontSize: 12 }}>Errores de sincronización</strong>
+            <button onClick={() => { setErrores([]); setVerErrores(false); }} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}>Limpiar</button>
+          </div>
+          {errores.map((e, i) => (
+            <div key={i} style={{ fontSize: 10, color: 'var(--text-secondary)', marginBottom: 4, padding: 4, background: 'rgba(239,68,68,0.05)', borderRadius: 4 }}>
+              <strong>{e.key}:</strong> {e.msg}
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 function Header({ module, currentUser, onLogout, onSidebarToggle, collapsed, isMobileView, onNavigate }) {
   const isMobile = window.innerWidth < 768;
   const isSmallMobile = window.innerWidth < 480;
@@ -6873,16 +7734,19 @@ function App() {
       // case 'evidencia': REMOVIDO - integrado en Producción
       case 'checkin': return <CheckinModule currentUser={currentUser} onNavigate={setActiveModule} />;
       case 'mensajeria': return <MensajeriaModule onNavigate={setActiveModule} />;
-      case 'cobros': return <CobrosModule onNavigate={setActiveModule} />;
-      case 'notas': return <NotasModule onNavigate={setActiveModule} />;
+      case 'cobros':
+      case 'notas':
+      case 'nomina':
+      case 'tarifas':
+      case 'corte':
+      case 'finanzas':
+        return <FinanzasModule currentUser={currentUser} onNavigate={setActiveModule} />;
+      case 'doctores-admin': return <DoctoresAdminModule onNavigate={setActiveModule} />;
+      case 'contaduria': return <ContaduriaModule onNavigate={setActiveModule} />;
       case 'lab-externo': return <LabExternoModule onNavigate={setActiveModule} />;
       case 'inventario': return <InventarioModule onNavigate={setActiveModule} />;
-      case 'tarifas': return <TarifasModule onNavigate={setActiveModule} />;
       case 'config-ia': return <ConfiguracionIAModule onNavigate={setActiveModule} />;
-      case 'finanzas': return <FinanzasModule currentUser={currentUser} onNavigate={setActiveModule} />;
       case 'notas-ia': return <NotasIAModule currentUser={currentUser} onNavigate={setActiveModule} />;
-      case 'nomina': return <NominaModule onNavigate={setActiveModule} />;
-      case 'corte': return <CorteModule onNavigate={setActiveModule} />;
       case 'doctores': return currentDoctor ? <PortalDoctoresPersonalModule currentUser={currentDoctor} onNavigate={setActiveModule} /> : <PortalDoctoresLoginModule currentUser={currentDoctor} setCurrentUser={setCurrentDoctor} onNavigate={setActiveModule} />;
       case 'config': return <ConfigModule onNavigate={setActiveModule} />;
       default: return <Dashboard currentUser={currentUser} onNavigate={setActiveModule} />;
@@ -6900,17 +7764,7 @@ function App() {
         <main style={{ flex:1, overflow:'auto', padding: window.innerWidth < 480 ? mainPaddingSmall : mainPadding, paddingRight: window.innerWidth < 480 ? 8 : 28 }}>{renderContent()}</main>
       </div>
       {/* Indicador de sincronización en la esquina inferior derecha */}
-      <div style={{
-        position: 'fixed', bottom: 12, right: 12, padding: '6px 12px',
-        background: syncStatus === 'connected' ? 'rgba(52,211,153,0.15)' : (syncStatus === 'offline' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)'),
-        border: `1px solid ${syncStatus === 'connected' ? 'rgba(52,211,153,0.4)' : (syncStatus === 'offline' ? 'rgba(239,68,68,0.4)' : 'rgba(245,158,11,0.4)')}`,
-        borderRadius: 20, fontSize: 11, fontWeight: 600,
-        color: syncStatus === 'connected' ? '#34D399' : (syncStatus === 'offline' ? '#EF4444' : '#F59E0B'),
-        display: 'flex', alignItems: 'center', gap: 6, zIndex: 100, pointerEvents: 'none'
-      }}>
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'currentColor', animation: syncStatus === 'connecting' ? 'pulse 1.5s infinite' : 'none' }} />
-        {syncStatus === 'connected' ? 'En vivo' : (syncStatus === 'offline' ? 'Sin conexión' : 'Conectando...')}
-      </div>
+      <SyncIndicator status={syncStatus} />
     </div>
   );
 }
