@@ -268,18 +268,36 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // para mantener la key fuera del navegador.
 
 let supabaseClient = null;
+let supabaseReadyPromise = null;
 
 function initSupabase() {
   if (supabaseClient) return supabaseClient;
-  if (!window.supabase) {
-    console.warn('Supabase SDK no cargado todavía');
-    return null;
-  }
+  if (!window.supabase) return null;
   const { createClient } = window.supabase;
   supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     realtime: { params: { eventsPerSecond: 5 } }
   });
   return supabaseClient;
+}
+
+// Espera asíncrona hasta que el SDK de Supabase esté disponible (max 5s)
+function ensureSupabase() {
+  if (supabaseClient) return Promise.resolve(supabaseClient);
+  if (supabaseReadyPromise) return supabaseReadyPromise;
+  supabaseReadyPromise = new Promise((resolve) => {
+    let intentos = 0;
+    const check = () => {
+      if (window.supabase) {
+        resolve(initSupabase());
+      } else if (intentos++ < 50) { // 50 * 100ms = 5s
+        setTimeout(check, 100);
+      } else {
+        resolve(null);
+      }
+    };
+    check();
+  });
+  return supabaseReadyPromise;
 }
 
 // ============================================================
@@ -311,7 +329,7 @@ const DB = (() => {
   const flushPending = async (entity, table) => {
     const list = JSON.parse(localStorage.getItem(pendingKey(entity)) || '[]');
     if (list.length === 0) return;
-    const sb = initSupabase();
+    const sb = await ensureSupabase();
     if (!sb) return;
     for (const action of list) {
       try {
@@ -328,7 +346,7 @@ const DB = (() => {
 
   // ---- Generic CRUD ----
   const list = async (table, opts = {}) => {
-    const sb = initSupabase();
+    const sb = await ensureSupabase();
     if (sb) {
       try {
         let q = sb.from(table).select('*');
@@ -349,7 +367,7 @@ const DB = (() => {
   };
 
   const upsert = async (table, row, opts = {}) => {
-    const sb = initSupabase();
+    const sb = await ensureSupabase();
     if (sb) {
       try {
         const { data, error } = await sb.from(table).upsert(row, { onConflict: opts.onConflict || 'id' }).select();
@@ -372,7 +390,7 @@ const DB = (() => {
   };
 
   const update = async (table, id, patch) => {
-    const sb = initSupabase();
+    const sb = await ensureSupabase();
     if (sb) {
       try {
         const { data, error } = await sb.from(table).update(patch).eq('id', id).select();
@@ -390,7 +408,7 @@ const DB = (() => {
   };
 
   const remove = async (table, id) => {
-    const sb = initSupabase();
+    const sb = await ensureSupabase();
     if (sb) {
       try {
         const { error } = await sb.from(table).delete().eq('id', id);
@@ -407,21 +425,26 @@ const DB = (() => {
 
   // ---- Suscripción en tiempo real ----
   const subscribe = (table, callback) => {
-    const sb = initSupabase();
-    if (!sb) return () => {};
-    const channel = sb
-      .channel(`zera_${table}_${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table }, (payload) => {
-        // Refrescar caché y notificar
-        list(table).then(callback);
-      })
-      .subscribe();
-    return () => sb.removeChannel(channel);
+    let channel = null;
+    let cancelled = false;
+    ensureSupabase().then((sb) => {
+      if (cancelled || !sb) return;
+      channel = sb
+        .channel(`zera_${table}_${Date.now()}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table }, () => {
+          list(table).then(callback);
+        })
+        .subscribe();
+    });
+    return () => {
+      cancelled = true;
+      if (channel && supabaseClient) supabaseClient.removeChannel(channel);
+    };
   };
 
   // ---- Config como key-value ----
   const getConfig = async (key, defaultVal = null) => {
-    const sb = initSupabase();
+    const sb = await ensureSupabase();
     if (sb) {
       try {
         const { data, error } = await sb.from('config_lab').select('value').eq('key', key).maybeSingle();
@@ -436,7 +459,7 @@ const DB = (() => {
   };
   const setConfig = async (key, value) => {
     localStorage.setItem(`cfg_${key}`, JSON.stringify(value));
-    const sb = initSupabase();
+    const sb = await ensureSupabase();
     if (sb) {
       try {
         await sb.from('config_lab').upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
@@ -606,9 +629,10 @@ const DBSync = (() => {
       if (!snake.id) snake.id = Date.now() + Math.floor(Math.random() * 1000);
       return snake;
     });
-    const sb = initSupabase();
+    // Esperar a que Supabase esté listo (max 5s) — no genera error si solo está cargando
+    const sb = await ensureSupabase();
     if (!sb) {
-      notifyError(lsKey, 'Supabase no inicializado');
+      console.warn(`[Sync] push ${lsKey} aplazado: Supabase aún no listo`);
       return;
     }
     try {
@@ -624,18 +648,27 @@ const DBSync = (() => {
     }
   };
 
+  // Debounce: agrupar pushes del mismo key en una sola llamada (evita spam)
+  const pendingPush = {};
+  const schedulePush = (lsKey) => {
+    if (pendingPush[lsKey]) clearTimeout(pendingPush[lsKey]);
+    pendingPush[lsKey] = setTimeout(() => {
+      push(lsKey).catch(e => console.warn('Push fallido:', e));
+      delete pendingPush[lsKey];
+    }, 500);
+  };
+
   // Init: pull todo desde Supabase + setup real-time + override setItem
   const init = async () => {
     if (initialized) return;
     initialized = true;
 
-    // Override localStorage.setItem para hacer push automático
+    // Override localStorage.setItem para hacer push automático (debounced)
     if (originalSetItem) {
       localStorage.setItem = function(key, value) {
         originalSetItem(key, value);
         if (MAPPING[key]) {
-          // Push en background (no esperar)
-          push(key).catch(e => console.warn('Sync push failed:', e));
+          schedulePush(key);
         }
       };
     }
@@ -1342,23 +1375,21 @@ const USERS = [
 ];
 
 const ROLE_MODULES = {
-  'itzel':  ['dashboard','ordenes','produccion','checkin','mensajeria','cobros','lab-externo','inventario','tarifas','finanzas','nomina','corte','doctores','config'],
-  'montserrat':   ['dashboard','ordenes','produccion','cobros','inventario','tarifas','lab-externo','corte','doctores','config'],
-  'rafael': ['dashboard','ordenes','produccion','checkin','lab-externo','inventario'],
-  'aram': ['dashboard','ordenes','produccion'],
-  'fidel': ['dashboard','produccion'],
-  'kevin': ['dashboard','ordenes','produccion','lab-externo'],
+  'itzel':       ['dashboard','ordenes','produccion','checkin','mensajeria','finanzas','contaduria','doctores-admin','lab-externo','inventario','config'],
+  'montserrat':  ['dashboard','ordenes','produccion','checkin','mensajeria','finanzas','contaduria','doctores-admin','lab-externo','inventario','config'],
+  'rafael':      ['dashboard','ordenes','produccion','checkin','finanzas','doctores-admin','lab-externo','inventario'],
+  'aram':        ['dashboard','ordenes','produccion','checkin'],
+  'fidel':       ['dashboard','produccion','checkin'],
+  'kevin':       ['dashboard','ordenes','produccion','mensajeria','lab-externo','checkin'],
 };
 
 const ROLE_DASHBOARD = {
-  'itzel':  { stats: ['ordenes','produccion','listas','pagos','alertas'], greeting: 'Resumen completo del lab' },
-  'montserrat':   { stats: ['ordenes','pagos','inventario'], greeting: 'Resumen de operaciones' },
-  'rafael': { stats: ['ordenes','produccion','mis_trabajos'], greeting: 'Tus órdenes y producción' },
-  'montserrat2': { stats: ['mis_trabajos','checkin'], greeting: 'Tus trabajos' },
-  'aram':   { stats: ['mis_trabajos','checkin'], greeting: 'Tus trabajos asignados' },
-  'juan':   { stats: ['mis_trabajos','checkin'], greeting: 'Tus trabajos en escaneo' },
-  'abril':  { stats: ['mis_trabajos','checkin'], greeting: 'Tus trabajos en escaneo' },
-  'kevin':  { stats: ['entregas','checkin'], greeting: 'Tus entregas del día' },
+  'itzel':       { stats: ['ordenes','produccion','pagos','alertas'], greeting: 'Resumen completo del lab' },
+  'montserrat':  { stats: ['ordenes','pagos','contaduria'], greeting: 'Resumen de operaciones y facturación' },
+  'rafael':      { stats: ['ordenes','produccion','mis_trabajos'], greeting: 'Tus órdenes y producción' },
+  'aram':        { stats: ['mis_trabajos','checkin'], greeting: 'Tus trabajos asignados' },
+  'fidel':       { stats: ['mis_trabajos','checkin'], greeting: 'Tus trabajos asignados' },
+  'kevin':       { stats: ['entregas','checkin'], greeting: 'Tus entregas del día' },
 };
 
 const DOCTOR_PINS = [
@@ -4366,8 +4397,86 @@ const COBROS_DATA = [
 // llegar un trabajo a "calidad"). Permite cobrar con descuentos.
 // ============================================================
 
+// Sub-componente: vista por doctor dentro de CobrosModule
+function CobrosVistaPorDoctor({ onNavigate, cobros }) {
+  const [tc] = React.useState(parseFloat(localStorage.getItem('tipoCambioUSDMXN')) || 17.5);
+  const [busqueda, setBusqueda] = React.useState('');
+  const [doctorExpandido, setDoctorExpandido] = React.useState(null);
+  const toMXN = (m, mon) => mon === 'USD' ? m * tc : m;
+
+  const doctores = React.useMemo(() => {
+    const map = {};
+    cobros.forEach(c => {
+      const d = c.doctor || 'Sin doctor';
+      if (!map[d]) map[d] = { nombre: d, pendientes: [], cobrados: [], totalPendiente: 0, totalCobrado: 0 };
+      const monto = toMXN((c.montoFinal ?? c.monto) || 0, c.moneda);
+      if (c.estado === 'cobrado') { map[d].cobrados.push(c); map[d].totalCobrado += monto; }
+      else { map[d].pendientes.push(c); map[d].totalPendiente += monto; }
+    });
+    return Object.values(map)
+      .filter(d => !busqueda || d.nombre.toLowerCase().includes(busqueda.toLowerCase()))
+      .sort((a, b) => b.totalPendiente - a.totalPendiente);
+  }, [cobros, busqueda]);
+
+  const card = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 16, marginBottom: 12 };
+  const input = { padding: '10px 12px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 6, color: '#fff', fontSize: 13, width: '100%', boxSizing: 'border-box' };
+
+  return (
+    <div>
+      <input type="text" placeholder="🔍 Buscar doctor..." value={busqueda} onChange={(e) => setBusqueda(e.target.value)} style={{ ...input, marginBottom: 12 }} />
+      {doctores.length === 0 ? (
+        <div style={{ ...card, textAlign: 'center', padding: 40 }}>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>📒</div>
+          <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>{cobros.length === 0 ? 'Sin cobros aún' : 'Sin doctores que coincidan'}</div>
+        </div>
+      ) : doctores.map(d => {
+        const exp = doctorExpandido === d.nombre;
+        return (
+          <div key={d.nombre} style={card}>
+            <div onClick={() => setDoctorExpandido(exp ? null : d.nombre)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 700 }}>{d.nombre}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{d.pendientes.length + d.cobrados.length} notas · {d.pendientes.length} pendiente{d.pendientes.length !== 1 ? 's' : ''}</div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(80px, 1fr))', gap: 12, textAlign: 'center', flex: '0 1 320px' }}>
+                <div><div style={{ fontSize: 10, color: 'var(--warning)' }}>Debe</div><div style={{ fontSize: 14, fontWeight: 700, color: d.totalPendiente > 0 ? 'var(--warning)' : 'var(--text-muted)' }}>${d.totalPendiente.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div></div>
+                <div><div style={{ fontSize: 10, color: 'var(--success)' }}>Cobrado</div><div style={{ fontSize: 14, fontWeight: 700, color: 'var(--success)' }}>${d.totalCobrado.toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div></div>
+                <div><div style={{ fontSize: 10, color: 'var(--mod-cobros)' }}>Total</div><div style={{ fontSize: 18, fontWeight: 900, color: 'var(--mod-cobros)' }}>${(d.totalPendiente + d.totalCobrado).toLocaleString('es-MX', { maximumFractionDigits: 0 })}</div></div>
+              </div>
+              <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>{exp ? '▾' : '▸'}</div>
+            </div>
+            {exp && (
+              <div style={{ borderTop: '1px solid var(--border-subtle)', marginTop: 14, paddingTop: 14 }}>
+                {d.pendientes.map(c => (
+                  <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(245,158,11,0.08)', borderRadius: 8, fontSize: 12, marginBottom: 6, borderLeft: '3px solid var(--warning)' }}>
+                    <div>
+                      <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{c.folio} · {c.paciente}</div>
+                      <div style={{ color: 'var(--text-muted)' }}>{c.trabajo} · {c.fechaEmision}</div>
+                    </div>
+                    <div style={{ color: 'var(--warning)', fontWeight: 700 }}>${((c.montoFinal ?? c.monto) || 0).toLocaleString('es-MX')} {c.moneda}</div>
+                  </div>
+                ))}
+                {d.cobrados.slice(0, 5).map(c => (
+                  <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(52,211,153,0.08)', borderRadius: 8, fontSize: 12, marginBottom: 6, borderLeft: '3px solid var(--success)' }}>
+                    <div>
+                      <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{c.folio} · {c.paciente}</div>
+                      <div style={{ color: 'var(--text-muted)' }}>Cobrado: {c.fechaCobro} ({c.metodo})</div>
+                    </div>
+                    <div style={{ color: 'var(--success)', fontWeight: 700 }}>${((c.montoFinal ?? c.monto) || 0).toLocaleString('es-MX')} {c.moneda}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function CobrosModule({ onNavigate }) {
   useZeraSync('cobrosRegistro');
+  const [vistaPor, setVistaPor] = React.useState('nota'); // 'nota' | 'doctor'
   const [cobros, setCobros] = React.useState(() => {
     return JSON.parse(localStorage.getItem('cobrosRegistro') || '[]');
   });
@@ -4512,9 +4621,22 @@ function CobrosModule({ onNavigate }) {
   return (
     <div style={{ animation: 'fadeIn 0.3s' }}>
       <SectionHeader title="Cobros y Pagos" subtitle="Cobros generados automáticamente cuando un trabajo llega a calidad" color="var(--mod-cobros)" icon="💳">
-        <button onClick={() => setModalManual(true)} style={{ padding: '12px 20px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>+ Cobro manual</button>
+        {vistaPor === 'nota' && <button onClick={() => setModalManual(true)} style={{ padding: '12px 20px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>+ Cobro manual</button>}
         <button onClick={recargar} style={{ padding: '12px 20px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>🔄 Recargar</button>
       </SectionHeader>
+
+      {/* TOGGLE Vista por nota / por doctor */}
+      <div style={{ display: 'flex', gap: 4, background: 'var(--bg-card)', borderRadius: 'var(--radius-md)', padding: 4, marginBottom: 16, width: 'fit-content' }}>
+        <button onClick={() => setVistaPor('nota')} style={{ padding: '8px 16px', borderRadius: 'var(--radius-sm)', background: vistaPor === 'nota' ? 'var(--mod-cobros)' : 'transparent', border: 'none', color: vistaPor === 'nota' ? '#fff' : 'var(--text-muted)', cursor: 'pointer', fontSize: 13, fontWeight: vistaPor === 'nota' ? 700 : 500 }}>📋 Por nota</button>
+        <button onClick={() => setVistaPor('doctor')} style={{ padding: '8px 16px', borderRadius: 'var(--radius-sm)', background: vistaPor === 'doctor' ? 'var(--mod-cobros)' : 'transparent', border: 'none', color: vistaPor === 'doctor' ? '#fff' : 'var(--text-muted)', cursor: 'pointer', fontSize: 13, fontWeight: vistaPor === 'doctor' ? 700 : 500 }}>👨‍⚕️ Por doctor</button>
+      </div>
+
+      {/* Si está en vista por doctor: render NotasModule (agregado por doctor) */}
+      {vistaPor === 'doctor' && <CobrosVistaPorDoctor onNavigate={onNavigate} cobros={cobros} />}
+
+      {vistaPor === 'nota' && (
+      <>
+
 
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 20 }}>
@@ -4664,6 +4786,9 @@ function CobrosModule({ onNavigate }) {
       )}
 
       {/* MODAL — Cobro manual */}
+      </>
+      )}
+
       {modalManual && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
           <div style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)', padding: 24, maxWidth: 520, width: '100%', border: '2px solid var(--mod-cobros)' }}>
@@ -4938,8 +5063,7 @@ function FinanzasModule({ currentUser, onNavigate }) {
 
   const tabs = [
     { id: 'resumen',   label: '📊 Resumen' },
-    { id: 'cobros',    label: '💳 Cobros' },
-    { id: 'notas',     label: '📒 Notas x Doctor' },
+    { id: 'cobros',    label: '💳 Cobros / Notas' },
     { id: 'nomina',    label: '💵 Nómina' },
     { id: 'tarifas',   label: '🦷 Tarifas' },
     { id: 'corte',     label: '📑 Corte semanal' },
@@ -4966,7 +5090,6 @@ function FinanzasModule({ currentUser, onNavigate }) {
 
       {tab === 'resumen' && <FinanzasResumenTab />}
       {tab === 'cobros'   && <CobrosModule onNavigate={onNavigate} />}
-      {tab === 'notas'    && <NotasModule onNavigate={onNavigate} />}
       {tab === 'nomina'   && <NominaModule />}
       {tab === 'tarifas'  && <TarifasModule />}
       {tab === 'corte'    && <CorteModule />}
@@ -7228,7 +7351,41 @@ function Dashboard({ currentUser, onNavigate }) {
     alert(`✅ Check-in registrado para ${currentUser.name} a las ${hora}`);
   };
 
-  const recentOrders = SAMPLE_ORDERS.slice(0, 3);
+  // ÓRDENES Y ESTADÍSTICAS REALES (desde localStorage / Supabase)
+  const ordenesReales = React.useMemo(() => JSON.parse(localStorage.getItem('produccionOrdenes') || '[]'), []);
+  const cobrosReales = React.useMemo(() => JSON.parse(localStorage.getItem('cobrosRegistro') || '[]'), []);
+  const registroReales = React.useMemo(() => JSON.parse(localStorage.getItem('registroTrabajos') || '[]'), []);
+  const contaduriaReales = React.useMemo(() => JSON.parse(localStorage.getItem('contaduria') || '[]'), []);
+
+  const statsReales = React.useMemo(() => {
+    const activas = ordenesReales.filter(o => o.estado !== 'entregado' && o.estado !== 'enviado');
+    const enProduccion = ordenesReales.filter(o => o.estado && !['recepcion', 'entregado', 'enviado', 'entregar'].includes(o.estado));
+    const listas = ordenesReales.filter(o => o.estado === 'entregar');
+    const pagosPendientes = cobrosReales.filter(c => c.estado === 'pendiente');
+    const tc = parseFloat(localStorage.getItem('tipoCambioUSDMXN')) || 17.5;
+    const totalPendiente = pagosPendientes.reduce((s, c) => {
+      const m = (c.montoFinal ?? c.monto) || 0;
+      return s + (c.moneda === 'USD' ? m * tc : m);
+    }, 0);
+    const facturasPend = contaduriaReales.filter(c => c.estado === 'pendiente');
+    return {
+      ordenes: { label: 'Órdenes activas', value: activas.length, change: `${registroReales.length} registradas`, color: 'var(--mod-ordenes)' },
+      produccion: { label: 'En producción', value: enProduccion.length, change: '', color: 'var(--mod-produccion)' },
+      listas: { label: 'Listas p/entregar', value: listas.length, change: '', color: 'var(--success)' },
+      pagos: { label: 'Pagos pendientes', value: pagosPendientes.length, change: `$${totalPendiente.toLocaleString('es-MX', { maximumFractionDigits: 0 })}`, color: 'var(--mod-cobros)' },
+      contaduria: { label: 'Facturas pendientes', value: facturasPend.length, change: '', color: 'var(--mod-finanzas)' },
+      mis_trabajos: { label: 'Mis trabajos', value: ordenesReales.filter(o => (o.asignado_a || '').toLowerCase() === (currentUser.name || '').toLowerCase()).length, change: '', color: 'var(--mod-produccion)' },
+      entregas: { label: 'Entregas pendientes', value: listas.length, change: '', color: 'var(--warning)' },
+      alertas: { label: 'Alertas', value: 0, change: 'sin alertas', color: 'var(--warning)' },
+      checkin: { label: 'Check-in hoy', value: checkedIn ? '✓' : '—', change: checkedIn ? 'ok' : 'pendiente', color: 'var(--mod-checkin)' }
+    };
+  }, [ordenesReales, cobrosReales, registroReales, contaduriaReales, currentUser.name, checkedIn]);
+
+  // Órdenes más recientes (últimas 3 que aún no se han entregado)
+  const recentOrders = ordenesReales
+    .filter(o => o.estado !== 'entregado' && o.estado !== 'enviado')
+    .sort((a, b) => (b.id || 0) - (a.id || 0))
+    .slice(0, 3);
 
   if (selectedOrder) {
     return (
@@ -7258,40 +7415,48 @@ function Dashboard({ currentUser, onNavigate }) {
       </div>
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:14, marginBottom:24 }}>
-        {SAMPLE_STATS.filter((_,i) => i < role.stats.length).map((s,i) => (
-          <div key={i} style={{ background:'var(--bg-card)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-lg)', padding:'20px 24px', borderLeft:`4px solid ${s.color}` }}>
-            <div style={{ fontSize:13, color:'var(--text-muted)', fontWeight:500, marginBottom:6 }}>{s.label}</div>
-            <div style={{ fontSize:32, fontWeight:900, color:s.color }}>{s.value}</div>
-            {s.change && <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:4 }}>{s.change}</div>}
-          </div>
-        ))}
+        {(role.stats || []).map((statKey,i) => {
+          const s = statsReales[statKey];
+          if (!s) return null;
+          return (
+            <div key={i} style={{ background:'var(--bg-card)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-lg)', padding:'20px 24px', borderLeft:`4px solid ${s.color}` }}>
+              <div style={{ fontSize:13, color:'var(--text-muted)', fontWeight:500, marginBottom:6 }}>{s.label}</div>
+              <div style={{ fontSize:32, fontWeight:900, color:s.color }}>{s.value}</div>
+              {s.change && <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:4 }}>{s.change}</div>}
+            </div>
+          );
+        })}
       </div>
 
       <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr', gap:16, marginBottom:24 }}>
         <div>
           <div style={{ fontSize:16, fontWeight:700, marginBottom:14 }}>Órdenes recientes</div>
           <div style={{ background:'var(--bg-card)', border:'1px solid var(--border-subtle)', borderRadius:'var(--radius-lg)', overflow:'hidden' }}>
+            {recentOrders.length === 0 && (
+              <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                Sin órdenes activas. Cuando registres trabajos aparecerán aquí.
+              </div>
+            )}
             {recentOrders.map((o, i) => {
-              const st = STATUS_MAP[o.estatus];
-              const daysLeft = Math.ceil((new Date(o.fecha_entrega) - new Date()) / 86400000);
+              const fase = PRODUCTION_PHASES.find(p => p.id === o.estado);
+              const color = fase?.color || 'var(--text-muted)';
               return (
-                <div key={o.id} onClick={() => setSelectedOrder(o)} style={{
+                <div key={o.id} onClick={() => onNavigate && onNavigate('produccion')} style={{
                   display:'flex', alignItems:'center', padding:'16px 20px', borderBottom:i<recentOrders.length-1?'1px solid var(--border-subtle)':'none',
                   cursor:'pointer', transition:'background 0.1s'
                 }}
                 onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-card-hover)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                 >
-                  <div style={{ width:4, height:40, borderRadius:2, background:st.color, flexShrink:0, marginRight:12 }} />
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:14, fontWeight:700, marginBottom:2 }}>{o.numero}</div>
-                    <div style={{ fontSize:12, color:'var(--text-muted)' }}>{o.doctor.nombre}</div>
+                  <div style={{ width:4, height:40, borderRadius:2, background:color, flexShrink:0, marginRight:12 }} />
+                  <div style={{ flex:1, minWidth: 0 }}>
+                    <div style={{ fontSize:14, fontWeight:700, marginBottom:2 }}>{o.folio}</div>
+                    <div style={{ fontSize:12, color:'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.paciente} — {o.doctor}</div>
                   </div>
                   <div style={{ textAlign:'right' }}>
-                    <div style={{ fontSize:13, fontWeight:700, color: daysLeft<=0?'var(--danger)':daysLeft<=3?'var(--warning)':'var(--text-secondary)' }}>
-                      {daysLeft>0?`${daysLeft}d`:'VENCIDO'}
+                    <div style={{ fontSize:11, fontWeight:700, color }}>
+                      {fase?.label || o.estado}
                     </div>
-                    <Badge color={st.color} bg={st.bg}>{st.label}</Badge>
                   </div>
                 </div>
               );
