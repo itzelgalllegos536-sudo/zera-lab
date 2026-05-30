@@ -484,8 +484,46 @@ const DB = (() => {
   };
 })();
 
+// Versión del código (para verificar deploy en producción)
+const ZERA_LAB_VERSION = '2026.05.30-fix-sync-v3';
+
 // Exponer globalmente para depuración
-if (typeof window !== 'undefined') window.DB = DB;
+if (typeof window !== 'undefined') {
+  window.DB = DB;
+  window.ZERA_LAB_VERSION = ZERA_LAB_VERSION;
+}
+
+// Función para FORZAR push de TODO lo de localStorage a Supabase ahora mismo
+async function forzarSyncAhora() {
+  console.log('[ZERA] Forzando sync de todos los datos a Supabase...');
+  const claves = ['registroTrabajos','produccionOrdenes','cobrosRegistro','comisionesGeneradas',
+                  'comisionesFidel','tarifasPrecios','salariosBase','reglasComisiones',
+                  'auditoriaFinanciera','costosOrdenes','gastosEscaneo','notasIA',
+                  'doctoresLab','contaduria'];
+  const resultados = [];
+  for (const k of claves) {
+    const valor = localStorage.getItem(k);
+    if (valor) {
+      try {
+        const data = JSON.parse(valor);
+        const tieneContenido = Array.isArray(data) ? data.length > 0 : Object.keys(data || {}).length > 0;
+        if (tieneContenido) {
+          console.log(`[ZERA] Pushing ${k}...`);
+          resultados.push({ key: k, items: Array.isArray(data) ? data.length : Object.keys(data).length });
+        }
+      } catch (e) { resultados.push({ key: k, error: e.message }); }
+    }
+  }
+  // Disparar push via setItem (que activa el override)
+  for (const r of resultados) {
+    if (!r.error) {
+      const valor = localStorage.getItem(r.key);
+      localStorage.setItem(r.key, valor); // dispara override → push
+    }
+  }
+  return resultados;
+}
+if (typeof window !== 'undefined') window.forzarSyncAhora = forzarSyncAhora;
 
 // Función para resetear TODO localStorage (para limpiar cache cuando hay datos viejos)
 function resetearLocalStorage() {
@@ -798,10 +836,9 @@ function procesarTrabajoCompletado(orden) {
   const ahora = new Date().toLocaleString('es-MX');
   const ahoraISO = new Date().toISOString();
 
-  // 1. Verificar si ya fue procesado (evitar duplicados)
+  // 1. Buscar cobro existente para esta orden (si ya existe, actualizar; si no, crear)
   const cobrosExistentes = JSON.parse(localStorage.getItem('cobrosRegistro') || '[]');
-  const yaProcesado = cobrosExistentes.some(c => c.ordenId === orden.id);
-  if (yaProcesado) return;
+  const cobroExistente = cobrosExistentes.find(c => c.ordenId === orden.id);
 
   // 2. Calcular monto desde Tarifas
   const tarifa = buscarTarifaPara(orden.trabajo);
@@ -810,31 +847,49 @@ function procesarTrabajoCompletado(orden) {
   const monedaCobro = tarifa ? tarifa.moneda : 'MXN';
   const montoBaseTotal = montoBaseUnit * unidades;
 
-  // 3. Generar cobro pendiente
-  const cobro = {
-    id: Date.now(),
-    ordenId: orden.id,
-    folio: orden.folio,
-    paciente: orden.paciente,
-    doctor: orden.doctor,
-    trabajo: orden.trabajo,
-    unidades: unidades,
-    tarifaUnitaria: montoBaseUnit,
-    montoBase: montoBaseTotal,
-    descuento: 0,        // editable después
-    montoFinal: montoBaseTotal,
-    moneda: monedaCobro,
-    estado: 'pendiente',
-    fechaEmision: ahora,
-    fechaEmisionISO: ahoraISO,
-    fechaVencimiento: new Date(Date.now() + 15*24*60*60*1000).toLocaleString('es-MX'),
-    metodo: null,
-    fechaCobro: null,
-    notas: tarifa ? '' : `⚠️ Tarifa no encontrada para "${orden.trabajo}". Define el monto manual.`,
-    usuario: 'Sistema'
-  };
-  cobrosExistentes.push(cobro);
-  localStorage.setItem('cobrosRegistro', JSON.stringify(cobrosExistentes));
+  // 3. Generar o actualizar cobro
+  if (cobroExistente) {
+    // Actualizar: enriquecer con folio de nota / factura si vienen
+    if (orden.folio_nota) cobroExistente.folioNota = orden.folio_nota;
+    if (orden.requiere_factura !== undefined) cobroExistente.requiereFactura = !!orden.requiere_factura;
+    if (orden.estado === 'entregado') {
+      cobroExistente.fechaEntrega = ahora;
+      cobroExistente.fechaEntregaISO = ahoraISO;
+    }
+    localStorage.setItem('cobrosRegistro', JSON.stringify(cobrosExistentes));
+  } else {
+    const cobro = {
+      id: Date.now(),
+      ordenId: orden.id,
+      folio: orden.folio,
+      folioNota: orden.folio_nota || null,
+      requiereFactura: !!orden.requiere_factura,
+      paciente: orden.paciente,
+      doctor: orden.doctor,
+      trabajo: orden.trabajo,
+      unidades: unidades,
+      tarifaUnitaria: montoBaseUnit,
+      montoBase: montoBaseTotal,
+      descuento: 0,
+      montoFinal: montoBaseTotal,
+      moneda: monedaCobro,
+      estado: 'pendiente',
+      fechaEmision: ahora,
+      fechaEmisionISO: ahoraISO,
+      fechaVencimiento: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toLocaleString('es-MX'),
+      metodo: null,
+      fechaCobro: null,
+      fechaEntrega: orden.estado === 'entregado' ? ahora : null,
+      fechaEntregaISO: orden.estado === 'entregado' ? ahoraISO : null,
+      notas: tarifa ? '' : `⚠️ Tarifa no encontrada para "${orden.trabajo}". Define el monto manual.`,
+      usuario: 'Sistema'
+    };
+    cobrosExistentes.push(cobro);
+    localStorage.setItem('cobrosRegistro', JSON.stringify(cobrosExistentes));
+  }
+
+  // Si tiene comisiones ya procesadas, salir aquí (las creamos solo la primera vez)
+  if (cobroExistente) return;
 
   // 4. Generar comisiones para el técnico asignado
   const comisiones = calcularComisionesPara(orden, orden.asignado_a);
@@ -7186,18 +7241,31 @@ function ConfigModule({ onNavigate }) {
         <button onClick={guardarConfig} style={{ marginTop: 8, padding: '14px 28px', background: 'var(--mod-config)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 15, fontWeight: 700 }}>💾 Guardar cambios</button>
       </SubSection>
 
-      {/* ZONA PELIGROSA: Reset */}
+      {/* ZONA PELIGROSA: Reset + Sync */}
       <div style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 'var(--radius-md)', padding: 16, marginTop: 24, marginBottom: 14 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#EF4444', marginBottom: 8 }}>⚠️ Zona de mantenimiento</div>
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>Si ves datos viejos o desincronizados entre dispositivos, limpia el caché local de este dispositivo. Los datos en Supabase NO se borran — solo el caché de tu navegador. Después recarga la página y verás los datos actualizados de la nube.</div>
-        <button onClick={() => {
-          if (!confirm('¿Borrar el caché local de este dispositivo? Los datos en la nube se mantienen y se recargarán al recargar la página.')) return;
-          resetearLocalStorage();
-          alert('✅ Caché local borrado. La página se va a recargar para traer datos frescos de la nube.');
-          window.location.reload();
-        }} style={{ padding: '10px 18px', background: 'rgba(239,68,68,0.2)', color: '#EF4444', border: '1px solid #EF4444', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>
-          🗑️ Limpiar caché local de este dispositivo
-        </button>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#EF4444', marginBottom: 8 }}>⚠️ Mantenimiento y sincronización</div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, fontFamily: 'monospace' }}>Versión: {window.ZERA_LAB_VERSION || 'desconocida'}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>Si ves datos viejos o si los cambios no aparecen en otros dispositivos, usa los botones de abajo.</div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button onClick={async () => {
+            try {
+              const res = await window.forzarSyncAhora();
+              alert('✅ Sync forzado. Datos subidos a la nube:\n\n' + res.map(r => `• ${r.key}: ${r.items || '0'} items`).join('\n'));
+            } catch (e) {
+              alert('⚠️ Error: ' + e.message);
+            }
+          }} style={{ padding: '10px 18px', background: 'rgba(91,141,239,0.2)', color: 'var(--accent-blue)', border: '1px solid var(--accent-blue)', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>
+            ☁️ Forzar sync ahora
+          </button>
+          <button onClick={() => {
+            if (!confirm('¿Borrar el caché local de este dispositivo? Los datos en la nube se mantienen.')) return;
+            resetearLocalStorage();
+            alert('✅ Caché local borrado. La página se va a recargar.');
+            window.location.reload();
+          }} style={{ padding: '10px 18px', background: 'rgba(239,68,68,0.2)', color: '#EF4444', border: '1px solid #EF4444', borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>
+            🗑️ Limpiar caché local
+          </button>
+        </div>
       </div>
 
       <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent-blue)', marginBottom: 14, letterSpacing: '1px', marginTop: 24, textTransform: 'uppercase', borderBottom: '1px solid rgba(91,141,239,0.2)', paddingBottom: 8 }}>Accesos rápidos</div>
